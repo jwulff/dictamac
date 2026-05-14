@@ -1,0 +1,34 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.pins
+Package.resolved
+
+# Xcode (if anyone opens the package in Xcode)
+xcuserdata/
+DerivedData/
+*.xcodeproj
+
+# Build artifacts
+dist/
+*.zip
+*.tar.gz
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local-only tooling (Claude Code worktrees, scratch)
+.claude/
+.local/
+
+# Test fixtures that are too large to commit (see Tests/Fixtures/README.md)
+Tests/Fixtures/*.m4a.large
+Tests/Fixtures/*.wav.large
