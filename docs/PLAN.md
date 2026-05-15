@@ -272,7 +272,7 @@ When `format=json` (CLI `--json`, or MCP `format: "json"`), stdout receives a si
 Notes:
 
 - `version` is a string ("1"), bumped on incompatible changes
-- `fullText` is `segments[].text` joined with single spaces — provided so callers can pick their granularity without re-concatenating
+- `fullText` applies the same normalization as the `PlaintextFormatter` algorithm in §7 U7 (trim each segment, drop empties, collapse internal whitespace, join with a single ASCII space) — minus the trailing newline, since this is a JSON string field. For any non-empty transcript the CLI plaintext output is exactly `fullText + "\n"`, so the CLI and MCP transports stay byte-identical for the body content (per the §3 "thin shells over one core" invariant)
 - For Voice Memos, `source.type` is `"voice-memo"` with `identifier` and `title` instead of `path`
 - `confidence` may be absent on segments where SpeechAnalyzer doesn't expose it; treat absence as "unknown"
 - "Absent" means the JSON key is **omitted entirely** from the segment object (NOT `null`). `JSONFormatter` must drop the key when confidence is unknown; tests must assert key omission, not a `null` value.
