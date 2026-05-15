@@ -137,6 +137,64 @@ struct TranscriptTests {
         #expect(decoded.source == original.source)
     }
 
+    // MARK: - Version validation (Copilot review feedback on #34)
+
+    @Test func transcriptDecodeRejectsMissingVersion() throws {
+        // A payload with no version key would silently decode as v1 if we
+        // ignored the field — that defeats the point of stamping the version.
+        // Decoding must fail instead.
+        let json = #"""
+        {
+          "segments": [],
+          "locale": "en-US",
+          "durationSeconds": 0,
+          "model": "x",
+          "source": {"type": "file", "path": "/a.m4a"},
+          "fullText": ""
+        }
+        """#.data(using: .utf8)!
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Transcript.self, from: json)
+        }
+    }
+
+    @Test func transcriptDecodeRejectsUnknownVersion() throws {
+        // A future v2 payload must fail loudly so callers see the mismatch
+        // rather than silently dropping new fields.
+        let json = #"""
+        {
+          "version": "2",
+          "segments": [],
+          "locale": "en-US",
+          "durationSeconds": 0,
+          "model": "x",
+          "source": {"type": "file", "path": "/a.m4a"},
+          "fullText": ""
+        }
+        """#.data(using: .utf8)!
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Transcript.self, from: json)
+        }
+    }
+
+    @Test func transcriptDecodeAcceptsVersionOne() throws {
+        // Sanity: a hand-written v1 payload still decodes cleanly.
+        let json = #"""
+        {
+          "version": "1",
+          "segments": [],
+          "locale": "en-US",
+          "durationSeconds": 0,
+          "model": "x",
+          "source": {"type": "file", "path": "/a.m4a"},
+          "fullText": ""
+        }
+        """#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Transcript.self, from: json)
+        #expect(decoded.locale == "en-US")
+        #expect(decoded.segments.isEmpty)
+    }
+
     // MARK: - fullText normalization (PLAN.md §6 / §7 U7)
 
     @Test func fullTextEmptyWhenNoSegments() {

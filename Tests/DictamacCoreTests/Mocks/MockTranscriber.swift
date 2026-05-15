@@ -8,8 +8,8 @@ import Foundation
 /// Modelled as an actor so it satisfies the protocol's ``Sendable``
 /// requirement without needing `@unchecked`.
 actor MockTranscriber: Transcriber {
-    var transcriptToReturn: Transcript
-    var errorToThrow: Error?
+    let transcriptToReturn: Transcript
+    let errorToThrow: Error?
     private(set) var receivedRequests: [TranscriptionRequest] = []
 
     init(transcriptToReturn: Transcript, errorToThrow: Error? = nil) {
@@ -23,13 +23,5 @@ actor MockTranscriber: Transcriber {
             throw errorToThrow
         }
         return transcriptToReturn
-    }
-
-    func setError(_ error: Error?) {
-        self.errorToThrow = error
-    }
-
-    func setTranscript(_ transcript: Transcript) {
-        self.transcriptToReturn = transcript
     }
 }

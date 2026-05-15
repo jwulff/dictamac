@@ -172,6 +172,14 @@ public struct Transcript: Sendable, Equatable, Codable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let payloadVersion = try container.decode(String.self, forKey: .version)
+        guard payloadVersion == Self.version else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .version,
+                in: container,
+                debugDescription: "Unsupported transcript schema version '\(payloadVersion)'; expected '\(Self.version)'."
+            )
+        }
         self.segments = try container.decode([TranscriptSegment].self, forKey: .segments)
         self.locale = try container.decode(String.self, forKey: .locale)
         self.durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
