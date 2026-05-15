@@ -1,0 +1,14 @@
+{
+  "durationSeconds" : 0,
+  "fullText" : "",
+  "locale" : "en-US",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+
+  ],
+  "source" : {
+    "path" : "\/tmp\/empty.m4a",
+    "type" : "file"
+  },
+  "version" : "1"
+}
