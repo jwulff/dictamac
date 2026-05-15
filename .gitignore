@@ -8,7 +8,7 @@ Package.resolved
 # Xcode (if anyone opens the package in Xcode)
 xcuserdata/
 DerivedData/
-*.xcodeproj
+*.xcodeproj/
 
 # Build artifacts
 dist/
