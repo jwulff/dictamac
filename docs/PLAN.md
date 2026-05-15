@@ -162,6 +162,7 @@ These codes are stable across versions; tests assert their values.
 - Version: from package version, e.g. `0.1.0`
 - Vendor: `jwulff`
 - Capabilities: `tools` only (no resources, no prompts, no sampling)
+- Protocol version: pinned to `"2024-11-05"` in the `initialize` response (the current widely-deployed MCP spec version as of the project's start). Bumping this string requires updating the MCP integration test snapshot in `Tests/DictamacMCPTests/` so the new version is exercised end-to-end.
 
 ### Tools
 
@@ -189,7 +190,7 @@ Returns: tool result `content` is a single `text` item containing either the pla
 
 #### `transcribe_voice_memo`
 
-Resolve a Voice Memo by query, transcribe, return the same result shape as `transcribe_file`.
+Resolve a Voice Memo by query, transcribe, return the same result shape as `transcribe_file`. The query grammar in §7 U6 (`--voice-memo` table) is the **same** grammar exposed by MCP's `transcribe_voice_memo.query`; the implementation lives in `DictamacCore` and is imported by both transports.
 
 ```json
 {
@@ -271,9 +272,11 @@ When `format=json` (CLI `--json`, or MCP `format: "json"`), stdout receives a si
 Notes:
 
 - `version` is a string ("1"), bumped on incompatible changes
-- `fullText` is `segments[].text` joined with single spaces — provided so callers can pick their granularity without re-concatenating
+- `fullText` applies the same normalization as the `PlaintextFormatter` algorithm in §7 U7 (trim each segment, drop empties, collapse internal whitespace, join with a single ASCII space) — minus the trailing newline, since this is a JSON string field. For any non-empty transcript the CLI plaintext output is exactly `fullText + "\n"`, so the CLI and MCP transports stay byte-identical for the body content (per the §3 "thin shells over one core" invariant)
 - For Voice Memos, `source.type` is `"voice-memo"` with `identifier` and `title` instead of `path`
 - `confidence` may be absent on segments where SpeechAnalyzer doesn't expose it; treat absence as "unknown"
+- "Absent" means the JSON key is **omitted entirely** from the segment object (NOT `null`). `JSONFormatter` must drop the key when confidence is unknown; tests must assert key omission, not a `null` value.
+- `fullText` for zero segments is the empty string `""`. The CLI plaintext output for zero segments is a single newline `"\n"` — the universal stdout contract in §4 ("one trailing newline, nothing else") applies even when the transcript is empty, so empty-transcript runs behave identically to non-empty ones for downstream consumers.
 
 ---
 
@@ -306,7 +309,7 @@ Match the proven steno daemon pattern. Entitlements:
 
 Build pipeline:
 
-1. `swift build -c release` with `-sectcreate __TEXT __info_plist Resources/Info.plist` linker flags to embed the plist
+1. `swift build -c release` with `-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Resources/Info.plist` to embed the plist (use `-Xlinker`, NOT `-Xswiftc` — `swiftc` rejects `-sectcreate` as an unknown argument; it is a linker flag)
 2. `codesign --sign - --options runtime --entitlements Resources/dictamac.entitlements --force .build/release/dictamac`
 
 `swift run` SKIPS code-signing and will crash with SIGTRAP. Always use `make run`.
@@ -344,7 +347,7 @@ The core. Reuses the pattern from [steno's daemon](https://github.com/jwulff/ste
 
 ```swift
 @MainActor
-func transcribe(url: URL, locale: Locale) async throws -> TranscriptionResult {
+func transcribe(url: URL, locale: Locale) async throws -> Transcript {
     let transcriber = SpeechTranscriber(
         locale: locale,
         transcriptionOptions: [],
@@ -370,7 +373,7 @@ func transcribe(url: URL, locale: Locale) async throws -> TranscriptionResult {
         ))
     }
     try await analyzed
-    return TranscriptionResult(segments: segments, locale: locale, ...)
+    return Transcript(segments: segments, locale: locale, ...)
 }
 ```
 
@@ -381,6 +384,8 @@ func transcribe(url: URL, locale: Locale) async throws -> TranscriptionResult {
 3. **The locale model must be installed.** First run downloads it; subsequent runs are immediate. Detect via the SpeechTranscriber installed-locales API and surface a clear stderr message during the first-run download so an agent (or human) sees what's happening.
 
 `analyzer.analyzeSequence(from: url)` handles format conversion internally for file input. The manual `AVAudioConverter` step in steno's daemon is only needed on the live-streaming path.
+
+`.volatileResults` is appropriate for live-streaming pipelines like steno's daemon; for file transcription we want only final results, so omit it (`reportingOptions: []`).
 
 ### U6 — Voice Memos discovery
 
@@ -406,13 +411,23 @@ Query grammar for `--voice-memo` / MCP `transcribe_voice_memo.query`:
 
 The Voice Memos library is sandboxed; accessing it may require Files & Folders TCC permission. Surface this clearly with exit code 73 + a stderr message including the deep-link to System Settings.
 
+The filesystem-fallback scanner walks `*.m4a` files **recursively** — Voice Memos may nest recordings inside per-iCloud-account or per-date subdirectories. Skip hidden files and the `.Trash` directory.
+
+The TCC deep-link for the Files & Folders Sandbox prompt is `x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders` — surface this on stderr when exit code 73 fires from a Voice Memos access denial. Verify the URL against a live macOS 26 system before relying on it in production messaging.
+
 The `CloudRecordings.db` schema is private and may change in future macOS versions. **Treat SQLite as an optimization, not a contract.** The filesystem fallback is the resilience plan.
 
 ### U7 — Output formatters
 
-Two formatters, both pure functions of `TranscriptionResult`:
+Two formatters, both pure functions of `Transcript`:
 
-- `PlaintextFormatter` — concatenates `segments[].text` with single spaces, trims, appends a single trailing newline. No timestamps.
+- `PlaintextFormatter` — produces the plaintext transcript with these exact steps, in order, so the output is unambiguous:
+    1. For each segment, take `segment.text` and trim leading/trailing whitespace (Unicode whitespace per `CharacterSet.whitespacesAndNewlines`).
+    2. **Filter out segments whose trimmed text is empty** — this includes both originally-empty segments and whitespace-only segments (e.g. `" "`, `"\t"`, `"\n"`), which trim to `""`. These dropped segments do NOT participate in the join, so they cannot introduce double spaces between surviving neighbors.
+    3. Collapse runs of internal whitespace within each remaining trimmed segment to a single ASCII space.
+    4. Join the resulting (non-empty) segments with a single ASCII space `" "`.
+    5. Append exactly one trailing newline `"\n"` (always, including when the joined string is empty — see §6 zero-segment note).
+  This guarantees no double spaces in the output regardless of segment-internal whitespace or the presence of whitespace-only segments, and no timestamps appear in plaintext.
 - `JSONFormatter` — emits the schema in §6 using `JSONEncoder` with `outputFormatting: [.prettyPrinted, .sortedKeys]` for human-readable, deterministic output (matters for snapshot tests).
 
 Both write to a passed-in `TextOutputStream` so MCP can capture the formatted result into a tool response.
@@ -487,14 +502,14 @@ CI:
 
 build:
 	swift build -c release \
-		-Xswiftc -sectcreate -Xswiftc __TEXT \
-		-Xswiftc __info_plist -Xswiftc Resources/Info.plist
+		-Xlinker -sectcreate -Xlinker __TEXT \
+		-Xlinker __info_plist -Xlinker Resources/Info.plist
 	$(MAKE) sign BINARY=.build/release/dictamac
 
 build-debug:
 	swift build \
-		-Xswiftc -sectcreate -Xswiftc __TEXT \
-		-Xswiftc __info_plist -Xswiftc Resources/Info.plist
+		-Xlinker -sectcreate -Xlinker __TEXT \
+		-Xlinker __info_plist -Xlinker Resources/Info.plist
 	$(MAKE) sign BINARY=.build/debug/dictamac
 
 sign:

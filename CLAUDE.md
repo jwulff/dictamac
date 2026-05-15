@@ -400,8 +400,8 @@ without verifying transcription still works end-to-end.
 let transcriber = SpeechTranscriber(
     locale: locale,
     transcriptionOptions: [],
-    reportingOptions: [.volatileResults],
-    attributeOptions: []
+    reportingOptions: [],
+    attributeOptions: [.audioTimeRange]
 )
 let analyzer = SpeechAnalyzer(modules: [transcriber])
 
@@ -429,9 +429,18 @@ Calling `analyzer.start()` off the main actor crashes with `SIGTRAP`.
   `--voice-memo` / `list_voice_memos` paths.
 
 When a TCC permission is missing, exit with code 73 and write a
-`stderr` message including the deep-link
-(`x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition`)
-so the user can grant the permission in one click.
+`stderr` message including the **deep-link for the specific permission
+that's missing** so the user can grant it in one click. The two paths
+require different URLs — never surface the Speech Recognition link for a
+Voice Memos access denial, or vice versa:
+
+- **Speech Recognition** missing →
+  `x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition`
+- **Files & Folders** missing (Voice Memos library access) →
+  `x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders`
+
+This matches the deep-link guidance in `docs/PLAN.md` §7 U6; keep both
+documents in sync if the URLs ever change.
 
 ### Locale model installation
 
