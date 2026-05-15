@@ -1,0 +1,25 @@
+{
+  "durationSeconds" : 7.1,
+  "fullText" : "Hello world. Second segment.",
+  "locale" : "en-US",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+    {
+      "confidence" : 0.94,
+      "endSeconds" : 3.2,
+      "startSeconds" : 0,
+      "text" : "Hello world."
+    },
+    {
+      "confidence" : 0.88,
+      "endSeconds" : 7.1,
+      "startSeconds" : 3.2,
+      "text" : "Second segment."
+    }
+  ],
+  "source" : {
+    "path" : "\/tmp\/audio.m4a",
+    "type" : "file"
+  },
+  "version" : "1"
+}

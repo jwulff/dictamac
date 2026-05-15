@@ -1,0 +1,20 @@
+{
+  "durationSeconds" : 5,
+  "fullText" : "Standup notes.",
+  "locale" : "en-US",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+    {
+      "confidence" : 0.9,
+      "endSeconds" : 5,
+      "startSeconds" : 0,
+      "text" : "Standup notes."
+    }
+  ],
+  "source" : {
+    "identifier" : "VM-2026-05-15-001",
+    "title" : "Yesterday's Standup",
+    "type" : "voice-memo"
+  },
+  "version" : "1"
+}

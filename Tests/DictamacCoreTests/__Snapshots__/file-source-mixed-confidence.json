@@ -1,0 +1,24 @@
+{
+  "durationSeconds" : 4,
+  "fullText" : "with confidence without confidence",
+  "locale" : "en-US",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+    {
+      "confidence" : 0.92,
+      "endSeconds" : 2,
+      "startSeconds" : 0,
+      "text" : "with confidence"
+    },
+    {
+      "endSeconds" : 4,
+      "startSeconds" : 2,
+      "text" : "without confidence"
+    }
+  ],
+  "source" : {
+    "path" : "\/tmp\/audio.m4a",
+    "type" : "file"
+  },
+  "version" : "1"
+}

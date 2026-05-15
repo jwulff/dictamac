@@ -1,0 +1,30 @@
+{
+  "durationSeconds" : 3,
+  "fullText" : "こんにちは世界 café — naïveté emoji 🎙️ test",
+  "locale" : "ja-JP",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+    {
+      "confidence" : 0.91,
+      "endSeconds" : 1,
+      "startSeconds" : 0,
+      "text" : "こんにちは世界"
+    },
+    {
+      "endSeconds" : 2,
+      "startSeconds" : 1,
+      "text" : "café — naïveté"
+    },
+    {
+      "confidence" : 0.87,
+      "endSeconds" : 3,
+      "startSeconds" : 2,
+      "text" : "emoji 🎙️ test"
+    }
+  ],
+  "source" : {
+    "path" : "\/tmp\/unicode.m4a",
+    "type" : "file"
+  },
+  "version" : "1"
+}
