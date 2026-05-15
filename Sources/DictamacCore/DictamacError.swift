@@ -26,8 +26,29 @@ public enum DictamacError: Error, CustomStringConvertible {
         case .fileNotFound(let url):
             return "No audio file found at \(url.path)"
         case .audioDecodeFailed(let url, let underlying):
-            return "Failed to decode audio file at \(url.path): \(underlying.localizedDescription)"
+            return "Failed to decode audio file at \(url.path): \(Self.message(for: underlying))"
         }
+    }
+
+    /// Best-effort human-readable text for an underlying error.
+    ///
+    /// `Error.localizedDescription` bridges to `LocalizedError.errorDescription`
+    /// when available, but falls back to a useless
+    /// "The operation couldn't be completed. (... error N.)" message for
+    /// plain Swift errors. This chain prefers
+    /// `LocalizedError.errorDescription`, then any `CustomStringConvertible`
+    /// description, then `String(describing:)` — so error types like
+    /// `AudioResolverError` (which conforms to both `LocalizedError` and
+    /// `CustomStringConvertible`) and AVFoundation's NSError-bridged
+    /// failures both surface useful text.
+    private static func message(for error: any Error) -> String {
+        if let localized = (error as? LocalizedError)?.errorDescription {
+            return localized
+        }
+        if let convertible = error as? CustomStringConvertible {
+            return convertible.description
+        }
+        return String(describing: error)
     }
 
     /// Stable POSIX-style exit code, mapped per PLAN.md §4.

@@ -12,11 +12,8 @@ struct AudioFileResolverTests {
         let missing = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dictamac-no-such-file-\(UUID().uuidString).m4a")
 
-        await #expect(throws: DictamacError.self) {
-            try await resolver.resolve(source: .path(missing.path))
-        }
-
-        // Assert the specific case + exit code (the agent-facing contract).
+        // Single invocation — capture the thrown error and inspect both
+        // its specific case and its exit code in one pass.
         do {
             _ = try await resolver.resolve(source: .path(missing.path))
             Issue.record("expected resolve to throw")
@@ -27,6 +24,26 @@ struct AudioFileResolverTests {
             }
             #expect(url.path == missing.standardizedFileURL.path)
             #expect(error.exitCode == 64)
+        }
+    }
+
+    @Test func stdinDecodeFailedUnderlyingSurfacesIssuePointer() async throws {
+        // Regression guard for the original Copilot review concern: until
+        // stdin lands in #12, hitting the .stdin branch must surface a
+        // recognizable error that names the responsible issue, even via
+        // `localizedDescription` (which bridges through `LocalizedError`).
+        let resolver = DefaultAudioFileResolver()
+        do {
+            _ = try await resolver.resolve(source: .stdin)
+            Issue.record("expected stdin to throw until #12 lands")
+        } catch let error as DictamacError {
+            #expect(error.description.contains("issue #12"))
+            // Also verify the underlying error itself bridges cleanly.
+            if case .audioDecodeFailed(_, let underlying) = error {
+                #expect(underlying.localizedDescription.contains("issue #12"))
+            } else {
+                Issue.record("expected .audioDecodeFailed, got \(error)")
+            }
         }
     }
 
@@ -268,7 +285,15 @@ struct AudioFileResolverTests {
 
         let semaphore = DispatchSemaphore(value: 0)
         writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
+        // Bounded wait so a stuck completion can never hang the suite.
+        // 10s is generous for ~half a second of silent AAC.
+        if semaphore.wait(timeout: .now() + .seconds(10)) == .timedOut {
+            throw NSError(
+                domain: "AudioFileResolverTests",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter.finishWriting timed out after 10s"]
+            )
+        }
 
         if writer.status != .completed {
             throw writer.error ?? NSError(

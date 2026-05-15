@@ -51,7 +51,11 @@ public protocol AudioFileResolver: Sendable {
 /// Inject a `formatReporter` closure to receive ``ProcessingFormatSummary``
 /// for each successful resolve; the CLI's `--verbose` mode wires one up,
 /// and tests use the closure to assert the captured format.
-public final class DefaultAudioFileResolver: AudioFileResolver, @unchecked Sendable {
+///
+/// `Sendable` conformance is checked: the only stored property is an
+/// immutable `let` of type `Optional<@Sendable closure>`, which the
+/// compiler can verify on its own — no `@unchecked` required.
+public final class DefaultAudioFileResolver: AudioFileResolver {
     public typealias FormatReporter = @Sendable (ProcessingFormatSummary) -> Void
 
     private let formatReporter: FormatReporter?
@@ -102,7 +106,13 @@ public final class DefaultAudioFileResolver: AudioFileResolver, @unchecked Senda
 /// propagated from ``AVAudioFile``). Carried inside
 /// ``DictamacError/audioDecodeFailed(_:underlying:)`` so callers see a
 /// uniform decode-failure shape.
-public enum AudioResolverError: Error, CustomStringConvertible {
+///
+/// Conforms to `LocalizedError` so the `localizedDescription` bridge
+/// surfaces the marker text instead of the generic
+/// "The operation couldn't be completed" NSError message — callers that
+/// hand this error up via ``DictamacError`` rely on that bridge to keep
+/// the "issue #12" pointer visible.
+public enum AudioResolverError: Error, LocalizedError, CustomStringConvertible {
     case stdinNotYetImplemented
 
     public var description: String {
@@ -111,4 +121,6 @@ public enum AudioResolverError: Error, CustomStringConvertible {
             return "stdin audio input is not yet implemented (see issue #12)"
         }
     }
+
+    public var errorDescription: String? { description }
 }
