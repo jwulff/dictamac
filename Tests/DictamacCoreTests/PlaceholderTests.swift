@@ -3,6 +3,6 @@ import Testing
 
 struct PlaceholderTests {
     @Test func compiles() {
-        #expect(Bool(true))
+        #expect(true)
     }
 }

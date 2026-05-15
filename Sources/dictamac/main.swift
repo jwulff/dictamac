@@ -1,5 +1,4 @@
 import ArgumentParser
-import DictamacCore
 import Foundation
 
 struct Dictamac: ParsableCommand {
