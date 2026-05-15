@@ -401,7 +401,7 @@ let transcriber = SpeechTranscriber(
     locale: locale,
     transcriptionOptions: [],
     reportingOptions: [],
-    attributeOptions: []
+    attributeOptions: [.audioTimeRange]
 )
 let analyzer = SpeechAnalyzer(modules: [transcriber])
 

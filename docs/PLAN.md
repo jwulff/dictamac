@@ -276,7 +276,7 @@ Notes:
 - For Voice Memos, `source.type` is `"voice-memo"` with `identifier` and `title` instead of `path`
 - `confidence` may be absent on segments where SpeechAnalyzer doesn't expose it; treat absence as "unknown"
 - "Absent" means the JSON key is **omitted entirely** from the segment object (NOT `null`). `JSONFormatter` must drop the key when confidence is unknown; tests must assert key omission, not a `null` value.
-- `fullText` for zero segments is the empty string `""`. The CLI plaintext output for zero segments is also the empty string (no trailing newline).
+- `fullText` for zero segments is the empty string `""`. The CLI plaintext output for zero segments is a single newline `"\n"` — the universal stdout contract in §4 ("one trailing newline, nothing else") applies even when the transcript is empty, so empty-transcript runs behave identically to non-empty ones for downstream consumers.
 
 ---
 
@@ -421,7 +421,13 @@ The `CloudRecordings.db` schema is private and may change in future macOS versio
 
 Two formatters, both pure functions of `Transcript`:
 
-- `PlaintextFormatter` — concatenates `segments[].text` with single spaces, trims, appends a single trailing newline. No timestamps. Segments' text is trimmed individually before joining with a single space, so leading/trailing whitespace within a segment never produces double spaces in the output.
+- `PlaintextFormatter` — produces the plaintext transcript with these exact steps, in order, so the output is unambiguous:
+    1. For each segment, take `segment.text` and trim leading/trailing whitespace (Unicode whitespace per `CharacterSet.whitespacesAndNewlines`).
+    2. Drop segments whose trimmed text is empty.
+    3. Collapse runs of internal whitespace within each remaining trimmed segment to a single ASCII space.
+    4. Join the resulting segments with a single ASCII space `" "`.
+    5. Append exactly one trailing newline `"\n"` (always, including when the joined string is empty — see §6 zero-segment note).
+  This guarantees no double spaces in the output regardless of segment-internal whitespace, and no timestamps appear in plaintext.
 - `JSONFormatter` — emits the schema in §6 using `JSONEncoder` with `outputFormatting: [.prettyPrinted, .sortedKeys]` for human-readable, deterministic output (matters for snapshot tests).
 
 Both write to a passed-in `TextOutputStream` so MCP can capture the formatted result into a tool response.
