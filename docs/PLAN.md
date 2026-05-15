@@ -423,11 +423,11 @@ Two formatters, both pure functions of `Transcript`:
 
 - `PlaintextFormatter` — produces the plaintext transcript with these exact steps, in order, so the output is unambiguous:
     1. For each segment, take `segment.text` and trim leading/trailing whitespace (Unicode whitespace per `CharacterSet.whitespacesAndNewlines`).
-    2. Drop segments whose trimmed text is empty.
+    2. **Filter out segments whose trimmed text is empty** — this includes both originally-empty segments and whitespace-only segments (e.g. `" "`, `"\t"`, `"\n"`), which trim to `""`. These dropped segments do NOT participate in the join, so they cannot introduce double spaces between surviving neighbors.
     3. Collapse runs of internal whitespace within each remaining trimmed segment to a single ASCII space.
-    4. Join the resulting segments with a single ASCII space `" "`.
+    4. Join the resulting (non-empty) segments with a single ASCII space `" "`.
     5. Append exactly one trailing newline `"\n"` (always, including when the joined string is empty — see §6 zero-segment note).
-  This guarantees no double spaces in the output regardless of segment-internal whitespace, and no timestamps appear in plaintext.
+  This guarantees no double spaces in the output regardless of segment-internal whitespace or the presence of whitespace-only segments, and no timestamps appear in plaintext.
 - `JSONFormatter` — emits the schema in §6 using `JSONEncoder` with `outputFormatting: [.prettyPrinted, .sortedKeys]` for human-readable, deterministic output (matters for snapshot tests).
 
 Both write to a passed-in `TextOutputStream` so MCP can capture the formatted result into a tool response.
