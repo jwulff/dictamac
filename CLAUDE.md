@@ -400,7 +400,7 @@ without verifying transcription still works end-to-end.
 let transcriber = SpeechTranscriber(
     locale: locale,
     transcriptionOptions: [],
-    reportingOptions: [.volatileResults],
+    reportingOptions: [],
     attributeOptions: []
 )
 let analyzer = SpeechAnalyzer(modules: [transcriber])
