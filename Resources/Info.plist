@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.dictamac.cli</string>
+    <key>CFBundleName</key>
+    <string>dictamac</string>
+    <key>CFBundleExecutable</key>
+    <string>dictamac</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0-dev</string>
+    <key>CFBundleVersion</key>
+    <string>0.0.0-dev</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>dictamac transcribes audio files on-device using Apple's SpeechAnalyzer. No audio leaves your Mac.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>dictamac may need microphone access to process audio input streams. dictamac never records without an explicit command and all transcription runs on-device.</string>
+</dict>
+</plist>
