@@ -21,12 +21,12 @@ build-debug:
 
 sign:
 	@if [ -z "$(BINARY)" ]; then \
-		echo "error: BINARY is required, e.g. make sign BINARY=.build/release/dictamac"; \
+		echo "error: BINARY is required, e.g. make sign BINARY=.build/release/dictamac" >&2; \
 		exit 2; \
 	fi
 	codesign --sign - --options runtime \
 		--entitlements Resources/dictamac.entitlements \
-		--force $(BINARY)
+		--force "$(BINARY)"
 
 test:
 	swift test
@@ -35,8 +35,8 @@ run: build-debug
 	.build/debug/dictamac $(ARGS)
 
 install: build
-	mkdir -p $(PREFIX)/bin
-	cp .build/release/dictamac $(PREFIX)/bin/
+	mkdir -p "$(PREFIX)/bin"
+	cp .build/release/dictamac "$(PREFIX)/bin/"
 
 clean:
 	swift package clean

@@ -1,5 +1,6 @@
 import ArgumentParser
 import DictamacCore
+import Foundation
 
 struct Dictamac: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -9,7 +10,10 @@ struct Dictamac: ParsableCommand {
     )
 
     func run() throws {
-        print("dictamac v0.0.0-dev — see https://github.com/jwulff/dictamac")
+        // stdout is reserved for transcript content (see docs/PLAN.md §4).
+        // Diagnostic/banner output goes to stderr.
+        let banner = "dictamac v0.0.0-dev — see https://github.com/jwulff/dictamac\n"
+        FileHandle.standardError.write(Data(banner.utf8))
     }
 }
 
