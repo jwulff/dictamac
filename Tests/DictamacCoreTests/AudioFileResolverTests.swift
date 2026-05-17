@@ -27,24 +27,167 @@ struct AudioFileResolverTests {
         }
     }
 
-    @Test func stdinDecodeFailedUnderlyingSurfacesIssuePointer() async throws {
-        // Regression guard for the original Copilot review concern: until
-        // stdin lands in #12, hitting the .stdin branch must surface a
-        // recognizable error that names the responsible issue, even via
-        // `localizedDescription` (which bridges through `LocalizedError`).
-        let resolver = DefaultAudioFileResolver()
+    // MARK: - Stdin intake (issue #12)
+
+    @Test func stdinEmptyMapsToAudioDecodeFailedWithExitCode65() async throws {
+        // Zero-byte stdin (e.g. `: | dictamac -`) is not a valid audio
+        // file. Surface as exit 65 with a stderr message explaining stdin
+        // was empty rather than letting AVAudioFile produce a confusing
+        // codec error against a zero-byte file.
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.close()  // EOF immediately.
+        let resolver = DefaultAudioFileResolver(
+            stdinProvider: { pipe.fileHandleForReading }
+        )
+
         do {
             _ = try await resolver.resolve(source: .stdin)
-            Issue.record("expected stdin to throw until #12 lands")
+            Issue.record("expected resolve to throw for empty stdin")
         } catch let error as DictamacError {
-            #expect(error.description.contains("issue #12"))
-            // Also verify the underlying error itself bridges cleanly.
-            if case .audioDecodeFailed(_, let underlying) = error {
-                #expect(underlying.localizedDescription.contains("issue #12"))
-            } else {
+            guard case .audioDecodeFailed(_, let underlying) = error else {
                 Issue.record("expected .audioDecodeFailed, got \(error)")
+                return
             }
+            #expect(error.exitCode == 65)
+            // Stderr-bound message must explain that stdin was empty.
+            #expect(error.description.lowercased().contains("stdin"))
+            #expect(error.description.lowercased().contains("empty"))
+            #expect(underlying.localizedDescription.lowercased().contains("stdin"))
         }
+    }
+
+    @Test func stdinValidM4APipedThroughResolves() async throws {
+        // The happy path: bytes from a valid .m4a file are piped through
+        // an injected FileHandle. Resolver drains them to a temp file
+        // and validates with AVAudioFile.
+        let m4a = try writeSilentM4A(duration: 0.5)
+        defer { try? FileManager.default.removeItem(at: m4a) }
+        let bytes = try Data(contentsOf: m4a)
+
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: bytes)
+        try pipe.fileHandleForWriting.close()  // signal EOF
+        let resolver = DefaultAudioFileResolver(
+            stdinProvider: { pipe.fileHandleForReading }
+        )
+
+        let resolved = try await resolver.resolve(source: .stdin)
+        // The returned URL must live under NSTemporaryDirectory and have
+        // a .m4a extension per the documented default container.
+        let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .standardizedFileURL
+        #expect(resolved.url.standardizedFileURL.path.hasPrefix(tempRoot.path))
+        #expect(resolved.url.pathExtension == "m4a")
+        #expect(FileManager.default.fileExists(atPath: resolved.url.path))
+
+        // Cleanup removes the temp file deterministically.
+        let pathBeforeCleanup = resolved.url.path
+        resolved.cleanup()
+        #expect(!FileManager.default.fileExists(atPath: pathBeforeCleanup))
+    }
+
+    @Test func stdinGarbageBytesMapToAudioDecodeFailedWithExitCode65() async throws {
+        // Arbitrary garbage should fail AVAudioFile validation and surface
+        // as exit 65 — same shape as the corrupt-file branch on the file
+        // path. The temp file the resolver staged must be removed before
+        // the error propagates (no leaks on the error path).
+        let garbage = Data((0..<128).map { _ in UInt8.random(in: 0...255) })
+
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: garbage)
+        try pipe.fileHandleForWriting.close()
+
+        let leakCheck = TempFileLeakChecker()
+        let resolver = DefaultAudioFileResolver(
+            stdinProvider: { pipe.fileHandleForReading },
+            tempFileObserver: { url in leakCheck.record(url) }
+        )
+
+        do {
+            _ = try await resolver.resolve(source: .stdin)
+            Issue.record("expected resolve to throw for garbage stdin")
+        } catch let error as DictamacError {
+            guard case .audioDecodeFailed = error else {
+                Issue.record("expected .audioDecodeFailed, got \(error)")
+                return
+            }
+            #expect(error.exitCode == 65)
+        }
+
+        // The temp file must NOT exist after the resolver throws.
+        let observed = try #require(leakCheck.url)
+        #expect(!FileManager.default.fileExists(atPath: observed.path))
+    }
+
+    @Test func stdinSuccessfulResolveCleansUpWhenCleanupCalled() async throws {
+        // Verifies the documented contract: when transcription completes,
+        // the caller invokes resolved.cleanup() and the temp file is gone.
+        // Run many times to guard against leaks across invocations.
+        let m4a = try writeSilentM4A(duration: 0.25)
+        defer { try? FileManager.default.removeItem(at: m4a) }
+        let bytes = try Data(contentsOf: m4a)
+
+        var observedURLs: [URL] = []
+        for _ in 0..<8 {
+            let pipe = Pipe()
+            try pipe.fileHandleForWriting.write(contentsOf: bytes)
+            try pipe.fileHandleForWriting.close()
+            let resolver = DefaultAudioFileResolver(
+                stdinProvider: { pipe.fileHandleForReading }
+            )
+            let resolved = try await resolver.resolve(source: .stdin)
+            observedURLs.append(resolved.url)
+            resolved.cleanup()
+        }
+
+        // Every URL should be unique (avoid temp-name collisions).
+        let unique = Set(observedURLs.map { $0.path })
+        #expect(unique.count == observedURLs.count)
+
+        // None of the temp files should still exist.
+        for url in observedURLs {
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    @Test func stdinThrownErrorAlsoCleansUpTempFile() async throws {
+        // Even when AVAudioFile fails, the resolver must remove the
+        // temp file it staged from stdin — no leaks on the error path.
+        let leakCheck = TempFileLeakChecker()
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
+        try pipe.fileHandleForWriting.close()
+        let resolver = DefaultAudioFileResolver(
+            stdinProvider: { pipe.fileHandleForReading },
+            tempFileObserver: { url in leakCheck.record(url) }
+        )
+
+        _ = try? await resolver.resolve(source: .stdin)
+        let observed = try #require(leakCheck.url)
+        #expect(!FileManager.default.fileExists(atPath: observed.path))
+    }
+
+    @Test func stdinCleanupFailureDoesNotThrow() async throws {
+        // Cleanup must be idempotent and tolerant: calling cleanup twice,
+        // or on an already-deleted file, must NOT throw — the caller
+        // relies on defer semantics with no error-handling boilerplate.
+        let m4a = try writeSilentM4A(duration: 0.25)
+        defer { try? FileManager.default.removeItem(at: m4a) }
+        let bytes = try Data(contentsOf: m4a)
+
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: bytes)
+        try pipe.fileHandleForWriting.close()
+        let resolver = DefaultAudioFileResolver(
+            stdinProvider: { pipe.fileHandleForReading }
+        )
+
+        let resolved = try await resolver.resolve(source: .stdin)
+        // Delete behind the resolver's back.
+        try FileManager.default.removeItem(at: resolved.url)
+        // Cleanup must still complete without throwing or crashing.
+        resolved.cleanup()
+        resolved.cleanup()  // double-call must be safe
     }
 
     @Test func corruptFileMapsToAudioDecodeFailedWithExitCode65() async throws {
@@ -72,8 +215,11 @@ struct AudioFileResolverTests {
         let wav = try writeSilentWAV(duration: 0.5)
         defer { try? FileManager.default.removeItem(at: wav) }
 
-        let url = try await resolver.resolve(source: .path(wav.path))
-        #expect(url.path == wav.standardizedFileURL.path)
+        let resolved = try await resolver.resolve(source: .path(wav.path))
+        #expect(resolved.url.path == wav.standardizedFileURL.path)
+        // Path branch must NOT delete the original on cleanup.
+        resolved.cleanup()
+        #expect(FileManager.default.fileExists(atPath: wav.path))
     }
 
     @Test func resolvesValidM4AFixture() async throws {
@@ -81,8 +227,10 @@ struct AudioFileResolverTests {
         let m4a = try writeSilentM4A(duration: 0.5)
         defer { try? FileManager.default.removeItem(at: m4a) }
 
-        let url = try await resolver.resolve(source: .path(m4a.path))
-        #expect(url.path == m4a.standardizedFileURL.path)
+        let resolved = try await resolver.resolve(source: .path(m4a.path))
+        #expect(resolved.url.path == m4a.standardizedFileURL.path)
+        resolved.cleanup()
+        #expect(FileManager.default.fileExists(atPath: m4a.path))
     }
 
     // MARK: - processingFormat capture (for --verbose plumbing)
@@ -145,7 +293,7 @@ struct AudioFileResolverTests {
 
         let tildePath = "~/\(stagedURL.lastPathComponent)"
         let resolved = try await resolver.resolve(source: .path(tildePath))
-        #expect(resolved.path == stagedURL.standardizedFileURL.path)
+        #expect(resolved.url.path == stagedURL.standardizedFileURL.path)
     }
 
     // MARK: - DictamacError surface
@@ -189,6 +337,24 @@ struct AudioFileResolverTests {
         func get() -> ProcessingFormatSummary? {
             lock.lock(); defer { lock.unlock() }
             return value
+        }
+    }
+
+    /// Thread-safe box for capturing the temp file the resolver staged
+    /// during a stdin intake, so tests can assert cleanup happened on
+    /// both the success and error paths.
+    private final class TempFileLeakChecker: @unchecked Sendable {
+        private let lock = NSLock()
+        private var captured: URL?
+
+        func record(_ url: URL) {
+            lock.lock(); defer { lock.unlock() }
+            captured = url
+        }
+
+        var url: URL? {
+            lock.lock(); defer { lock.unlock() }
+            return captured
         }
     }
 
