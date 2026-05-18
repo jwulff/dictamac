@@ -1,5 +1,6 @@
 import Foundation
 import DictamacCore
+import DictamacMCP
 import DictamacSpeech
 
 /// Per-mode async handlers, injected at the dispatch seam so tests can
@@ -102,8 +103,24 @@ public struct ModeHandlers: Sendable {
                 error.exit()
             },
             mcp: {
-                let error = DictamacError.argumentError(StubMessages.mcpNotImplemented)
-                error.exit()
+                // Build an empty-handler-registry MCP server bound to
+                // the process's standard handles. The transport
+                // foundation lands here (#18); the actual
+                // `initialize` / `tools/list` / `tools/call` handlers
+                // are added by follow-up issues (#22 / #26) via
+                // `MCPServer.register(method:handler:)`. Until they
+                // land, every method call returns -32601 (Method not
+                // found) — which is enough to verify the loop is
+                // alive end-to-end.
+                //
+                // The server runs to EOF on stdin; once the loop
+                // returns we exit 0 to match the CLI's success
+                // contract. Errors thrown by individual handlers are
+                // surfaced as JSON-RPC error responses inside the
+                // loop, never as process-exit failures.
+                let server = MCPServer()
+                await server.serve()
+                Darwin.exit(0)
             }
         )
     }
