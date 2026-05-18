@@ -142,3 +142,51 @@ system without an additional dependency.
   `CloudRecordingsError`, fall back to filesystem scanner"
 - Schema-dump utility to verify the assumed column names against a
   live macOS 26 database (research issue)
+
+## Review round 2 (post-ZPATH fix)
+
+Copilot's second pass surfaced two substantive issues and a handful of
+test-gap nits. Resolved in this branch:
+
+- **NULL `ZDATE` / `ZDURATION` poisoning the index.**
+  `sqlite3_column_double` returns `0.0` for `NULL` columns with no way
+  to distinguish that from a real zero. A row with NULL `ZDATE` would
+  silently be reported as recorded at the Core Data epoch
+  (`2001-01-01`), poisoning recency ordering and any date filter;
+  NULL `ZDURATION` would become a zero-length memo. The reader now
+  calls `sqlite3_column_type` for both columns before reading and
+  skips the row when either is `SQLITE_NULL`. Skipping mirrors the
+  empty-`ZPATH` policy — partial metadata corrupts the index more
+  than a missing entry, and SQLite is treated as an optimization that
+  the filesystem scanner can always cover.
+- **`sqliteOpenFailed` misused for prepare / bind / step failures.**
+  The single case was being thrown for every SQLite primitive,
+  conflating "couldn't open the file" with "couldn't prepare a query"
+  or "row corruption during step." Renamed to
+  `sqliteOperationFailed(operation: String, code: Int32, reason: String)`
+  carrying the failing primitive's name and the raw SQLite result
+  code. Diagnostics now read e.g. "CloudRecordings SQLite
+  sqlite3_prepare_v2 failed (code 1): ..." instead of a misleading
+  "open failed." All four primitives (`sqlite3_open_v2`,
+  `sqlite3_prepare_v2`, `sqlite3_bind_text`, `sqlite3_step`) report
+  through the one case with distinct `operation` strings.
+- **Unused `referenceEpoch` constant removed.** Dead since the date
+  conversion uses `Date(timeIntervalSinceReferenceDate:)` directly.
+- **Test fixture teardown.** Each test now wraps fixture creation in
+  a `Fixture` value with a `tearDown()` method called from a `defer`,
+  mirroring the locator tests. Removes the `dictamac-cloudrecordings-fixture-*`
+  leak under `NSTemporaryDirectory()` per run.
+- **New test coverage** pins the behaviors above end-to-end:
+  - `rowWithEmptyZPathIsSkipped`, `rowWithNullZPathIsSkipped` —
+    skip policy for unusable paths.
+  - `rowWithNullZDateIsSkipped`, `rowWithNullZDurationIsSkipped` —
+    skip policy for NULL numerics that would otherwise fabricate
+    metadata.
+  - `titleFallsBackToFilenameStemWhenZCustomLabelIsNull` /
+    `...IsEmpty` — title fallback covered for both NULL and empty
+    `ZCUSTOMLABEL`.
+  - `garbageBytesAtDatabaseURLThrowsSqliteOperationFailed` —
+    `sqliteOperationFailed` is now exercised end-to-end by pointing
+    the reader at 128 bytes of non-SQLite content.
+  - `errorDescriptionsAreHumanReadable` updated to assert the new
+    case's rendering includes operation name, code, and reason.

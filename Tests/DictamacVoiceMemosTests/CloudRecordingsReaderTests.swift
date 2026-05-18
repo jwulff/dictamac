@@ -17,32 +17,44 @@ import Testing
 /// of the schema we assume; (2) we can scaffold schema-drift variants
 /// (renamed columns, missing tables) without committing multiple
 /// `.db` blobs to git.
+///
+/// Fixtures are wrapped in a ``Fixture`` value whose ``Fixture/tearDown()``
+/// removes the per-test scratch directory. Mirrors the locator tests'
+/// pattern so repeated local/CI runs don't accumulate stale
+/// `dictamac-cloudrecordings-fixture-*` directories.
 @Suite struct CloudRecordingsReaderTests {
     // MARK: - Fixture helpers
 
-    /// Returns a temp directory unique to this test plus a `.db` file
-    /// path inside it. The directory is created on disk; the database
-    /// file is NOT — callers decide whether to populate it.
-    private static func makeFixtureDirectory() throws -> URL {
+    /// Creates a per-test scratch directory under `NSTemporaryDirectory()`
+    /// and returns a ``Fixture`` that owns its teardown. Callers `defer`
+    /// `fixture.tearDown()` immediately after construction.
+    private static func makeFixture() throws -> Fixture {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dictamac-cloudrecordings-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             at: dir,
             withIntermediateDirectories: true
         )
-        return dir
+        return Fixture(directory: dir)
     }
 
-    /// SQLite stores `NSDate` timestamps as seconds since
-    /// `2001-01-01 00:00:00 UTC` (the Core Data epoch). Tests construct
-    /// fixture rows using this offset so the reader's date conversion
-    /// can be asserted against round-trippable values.
-    private static let coreDataReferenceDate = Date(timeIntervalSinceReferenceDate: 0)
+    private struct Fixture {
+        let directory: URL
+
+        var defaultDatabaseURL: URL {
+            directory.appendingPathComponent("CloudRecordings.db")
+        }
+
+        func tearDown() {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
 
     /// Builds a synthetic `CloudRecordings.db` with the columns the
     /// reader expects. `rows` describes the fake recordings to insert
     /// (identifier-by-position only; the `ZCUSTOMLABEL`, `ZDATE`,
-    /// `ZDURATION`, `ZPATH` columns receive the supplied values).
+    /// `ZDURATION`, `ZPATH` columns receive the supplied values — any
+    /// `nil` becomes a SQL `NULL`).
     ///
     /// Returns the URL of the freshly-written database.
     @discardableResult
@@ -96,10 +108,26 @@ import Testing
                 OpaquePointer(bitPattern: -1),
                 to: sqlite3_destructor_type.self
             )
-            sqlite3_bind_text(statement, 2, row.title, -1, transient)
-            sqlite3_bind_double(statement, 3, row.dateSecondsSinceReference)
-            sqlite3_bind_double(statement, 4, row.durationSeconds)
-            sqlite3_bind_text(statement, 5, row.assetPath, -1, transient)
+            if let title = row.title {
+                sqlite3_bind_text(statement, 2, title, -1, transient)
+            } else {
+                sqlite3_bind_null(statement, 2)
+            }
+            if let date = row.dateSecondsSinceReference {
+                sqlite3_bind_double(statement, 3, date)
+            } else {
+                sqlite3_bind_null(statement, 3)
+            }
+            if let duration = row.durationSeconds {
+                sqlite3_bind_double(statement, 4, duration)
+            } else {
+                sqlite3_bind_null(statement, 4)
+            }
+            if let path = row.assetPath {
+                sqlite3_bind_text(statement, 5, path, -1, transient)
+            } else {
+                sqlite3_bind_null(statement, 5)
+            }
             let stepResult = sqlite3_step(statement)
             guard stepResult == SQLITE_DONE else {
                 throw FixtureError.insertFailed
@@ -120,10 +148,24 @@ import Testing
 
     private struct FixtureRow {
         let primaryKey: Int64
-        let title: String
-        let dateSecondsSinceReference: Double
-        let durationSeconds: Double
-        let assetPath: String
+        let title: String?
+        let dateSecondsSinceReference: Double?
+        let durationSeconds: Double?
+        let assetPath: String?
+
+        init(
+            primaryKey: Int64,
+            title: String? = "synthetic-row",
+            dateSecondsSinceReference: Double? = 0,
+            durationSeconds: Double? = 0,
+            assetPath: String? = "/tmp/dictamac-synthetic/row.m4a"
+        ) {
+            self.primaryKey = primaryKey
+            self.title = title
+            self.dateSecondsSinceReference = dateSecondsSinceReference
+            self.durationSeconds = durationSeconds
+            self.assetPath = assetPath
+        }
     }
 
     private struct FixtureColumnNames {
@@ -150,8 +192,9 @@ import Testing
     // MARK: - Happy path
 
     @Test func recordingsReturnsAllRowsFromSyntheticDatabase() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         let rows: [FixtureRow] = [
             FixtureRow(
                 primaryKey: 1,
@@ -177,7 +220,7 @@ import Testing
         ]
         try Self.writeFixtureDatabase(at: dbURL, rows: rows)
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
         let recordings = try reader.recordings()
 
         #expect(recordings.count == 3)
@@ -201,9 +244,10 @@ import Testing
     // MARK: - Missing file
 
     @Test func missingDatabaseThrowsSqliteUnavailable() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("does-not-exist.db")
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.directory.appendingPathComponent("does-not-exist.db")
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
 
         #expect(throws: CloudRecordingsError.self) {
             try reader.recordings()
@@ -223,11 +267,12 @@ import Testing
     // MARK: - Empty database (table exists, no rows)
 
     @Test func emptyDatabaseReturnsEmptyArrayNotError() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         try Self.writeFixtureDatabase(at: dbURL, rows: [])
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
         let recordings = try reader.recordings()
 
         #expect(recordings.isEmpty)
@@ -236,8 +281,9 @@ import Testing
     // MARK: - Schema drift — column renamed
 
     @Test func schemaDriftRenamedColumnThrowsSchemaUnrecognized() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         let drifted = FixtureColumnNames(
             title: "ZCUSTOMLABEL",
             date: "ZRECORDEDAT", // renamed from ZDATE — simulates macOS 27 schema drift
@@ -258,7 +304,7 @@ import Testing
             columnNames: drifted
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
 
         do {
             _ = try reader.recordings()
@@ -274,8 +320,9 @@ import Testing
     // MARK: - Schema drift — table renamed
 
     @Test func schemaDriftRenamedTableThrowsSchemaUnrecognized() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         try Self.writeFixtureDatabase(
             at: dbURL,
             rows: [
@@ -290,7 +337,7 @@ import Testing
             tableName: "ZRECORDING" // renamed from ZCLOUDRECORDING
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
 
         do {
             _ = try reader.recordings()
@@ -313,8 +360,9 @@ import Testing
     /// against the process working directory, which breaks downstream
     /// transcription. Regression for the Copilot review on PR #48.
     @Test func relativeZPathIsResolvedAgainstLibraryURL() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         try Self.writeFixtureDatabase(
             at: dbURL,
             rows: [
@@ -328,11 +376,11 @@ import Testing
             ]
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
         let recordings = try reader.recordings()
 
         let memo = try #require(recordings.first { $0.identifier == "42" })
-        #expect(memo.assetPath == dir.appendingPathComponent("my-recording.m4a"))
+        #expect(memo.assetPath == fixture.directory.appendingPathComponent("my-recording.m4a"))
     }
 
     /// `ZPATH` values that start with `/` are already absolute and must
@@ -341,8 +389,9 @@ import Testing
     /// `<library>/private/tmp/something.m4a`. Regression for the Copilot
     /// review on PR #48.
     @Test func absoluteZPathIsReturnedUnchanged() throws {
-        let dir = try Self.makeFixtureDirectory()
-        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
         let absolutePath = "/tmp/dictamac-synthetic/absolute-recording.m4a"
         try Self.writeFixtureDatabase(
             at: dbURL,
@@ -357,14 +406,239 @@ import Testing
             ]
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
         let recordings = try reader.recordings()
 
         let memo = try #require(recordings.first { $0.identifier == "7" })
         #expect(memo.assetPath == URL(fileURLWithPath: absolutePath))
         // Negative assertion — guard against the "double-prefix" bug
         // (joining absolute paths onto libraryURL).
-        #expect(!memo.assetPath.path.contains(dir.path))
+        #expect(!memo.assetPath.path.contains(fixture.directory.path))
+    }
+
+    // MARK: - Row skipping for unusable / NULL columns
+
+    /// A row whose `ZPATH` is the empty string is unusable (no asset to
+    /// open) and must be skipped, not surfaced as a memo with an empty
+    /// `assetPath`. The reader's documented behavior — pin it.
+    @Test func rowWithEmptyZPathIsSkipped() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: "well-formed",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1,
+                    assetPath: "/tmp/dictamac-synthetic/good.m4a"
+                ),
+                FixtureRow(
+                    primaryKey: 2,
+                    title: "empty-path",
+                    dateSecondsSinceReference: 200,
+                    durationSeconds: 2,
+                    assetPath: ""
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        #expect(recordings.count == 1)
+        #expect(recordings.first?.identifier == "1")
+    }
+
+    /// A row whose `ZPATH` is `NULL` should be skipped for the same
+    /// reason as the empty-string case.
+    @Test func rowWithNullZPathIsSkipped() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: "well-formed",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1,
+                    assetPath: "/tmp/dictamac-synthetic/good.m4a"
+                ),
+                FixtureRow(
+                    primaryKey: 2,
+                    title: "null-path",
+                    dateSecondsSinceReference: 200,
+                    durationSeconds: 2,
+                    assetPath: nil
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        #expect(recordings.count == 1)
+        #expect(recordings.first?.identifier == "1")
+    }
+
+    /// `sqlite3_column_double` returns `0.0` for NULL columns with no
+    /// way to distinguish that from a real zero. A NULL `ZDATE` would
+    /// silently report the row as recorded at the Core Data epoch
+    /// (~2001-01-01), poisoning recency ordering and date queries. The
+    /// reader checks `sqlite3_column_type` and skips such rows.
+    @Test func rowWithNullZDateIsSkipped() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: "well-formed",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1,
+                    assetPath: "/tmp/dictamac-synthetic/good.m4a"
+                ),
+                FixtureRow(
+                    primaryKey: 2,
+                    title: "null-date",
+                    dateSecondsSinceReference: nil,
+                    durationSeconds: 2,
+                    assetPath: "/tmp/dictamac-synthetic/missing-date.m4a"
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        #expect(recordings.count == 1)
+        #expect(recordings.first?.identifier == "1")
+    }
+
+    /// Mirror of the NULL-date case: a NULL `ZDURATION` would silently
+    /// report a zero-length memo. Skip rather than fabricate metadata.
+    @Test func rowWithNullZDurationIsSkipped() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: "well-formed",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1,
+                    assetPath: "/tmp/dictamac-synthetic/good.m4a"
+                ),
+                FixtureRow(
+                    primaryKey: 2,
+                    title: "null-duration",
+                    dateSecondsSinceReference: 200,
+                    durationSeconds: nil,
+                    assetPath: "/tmp/dictamac-synthetic/missing-duration.m4a"
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        #expect(recordings.count == 1)
+        #expect(recordings.first?.identifier == "1")
+    }
+
+    // MARK: - Title fallback to filename stem
+
+    /// When `ZCUSTOMLABEL` is NULL, the reader falls back to the
+    /// filename stem (path minus extension and parent directory). Pins
+    /// the user-visible behavior described in the reader's docstring.
+    @Test func titleFallsBackToFilenameStemWhenZCustomLabelIsNull() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: nil,
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1.5,
+                    assetPath: "/tmp/dictamac-synthetic/null-label-stem.m4a"
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        let memo = try #require(recordings.first { $0.identifier == "1" })
+        #expect(memo.title == "null-label-stem")
+    }
+
+    /// Same behavior when `ZCUSTOMLABEL` is the empty string rather than
+    /// NULL — both are treated as "no user title".
+    @Test func titleFallsBackToFilenameStemWhenZCustomLabelIsEmpty() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 1,
+                    title: "",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1.5,
+                    assetPath: "/tmp/dictamac-synthetic/empty-label-stem.m4a"
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+        let recordings = try reader.recordings()
+
+        let memo = try #require(recordings.first { $0.identifier == "1" })
+        #expect(memo.title == "empty-label-stem")
+    }
+
+    // MARK: - Operation failure exercised end-to-end
+
+    /// Points the reader at a path that exists but is not a SQLite
+    /// database. `sqlite3_open_v2` may accept the file handle (it does
+    /// little validation up front), but `sqlite_master` probing or
+    /// prepare will fail with a `SQLITE_NOTADB`-class error. Either way
+    /// the failure must surface as
+    /// ``CloudRecordingsError/sqliteOperationFailed(operation:code:reason:)``
+    /// so the resolver knows to attempt the filesystem fallback. Pins
+    /// the fallback signal end-to-end.
+    @Test func garbageBytesAtDatabaseURLThrowsSqliteOperationFailed() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+        let dbURL = fixture.defaultDatabaseURL
+        // 128 bytes of non-SQLite content. SQLite's file magic starts
+        // with "SQLite format 3\0"; this deliberately doesn't.
+        let garbage = Data(repeating: 0xAB, count: 128)
+        try garbage.write(to: dbURL)
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: fixture.directory)
+
+        do {
+            _ = try reader.recordings()
+            Issue.record("Expected throw for non-SQLite file at database URL")
+        } catch let error as CloudRecordingsError {
+            guard case .sqliteOperationFailed = error else {
+                Issue.record("Expected .sqliteOperationFailed, got \(error)")
+                return
+            }
+        }
     }
 
     // MARK: - Error rendering
@@ -375,10 +649,14 @@ import Testing
         )
         #expect(unavailable.description.contains("file not at /tmp/x.db"))
 
-        let openFailed = CloudRecordingsError.sqliteOpenFailed(
+        let operationFailed = CloudRecordingsError.sqliteOperationFailed(
+            operation: "sqlite3_prepare_v2",
+            code: 1,
             reason: "permission denied"
         )
-        #expect(openFailed.description.contains("permission denied"))
+        #expect(operationFailed.description.contains("sqlite3_prepare_v2"))
+        #expect(operationFailed.description.contains("permission denied"))
+        #expect(operationFailed.description.contains("1"))
 
         let schema = CloudRecordingsError.schemaUnrecognized(
             reason: "missing column ZDATE"

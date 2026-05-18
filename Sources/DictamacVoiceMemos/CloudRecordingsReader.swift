@@ -38,9 +38,11 @@ public protocol CloudRecordingsReader: Sendable {
     /// - Throws:
     ///   - ``CloudRecordingsError/sqliteUnavailable(reason:)`` when
     ///     the database file does not exist on disk.
-    ///   - ``CloudRecordingsError/sqliteOpenFailed(reason:)`` when
-    ///     `sqlite3_open_v2` fails for any reason other than missing
-    ///     file (permissions, malformed header, lock contention).
+    ///   - ``CloudRecordingsError/sqliteOperationFailed(operation:code:reason:)``
+    ///     when any SQLite call (`open`, `prepare`, `bind`, `step`)
+    ///     fails for any reason other than schema drift — corrupt
+    ///     headers, malformed databases, permission denials that
+    ///     slipped past TCC, lock contention, or row-level corruption.
     ///   - ``CloudRecordingsError/schemaUnrecognized(reason:)`` when
     ///     the expected table or any expected column is absent — Apple
     ///     has changed the private schema and the caller should fall
@@ -59,11 +61,6 @@ public protocol CloudRecordingsReader: Sendable {
 /// transient metadata read; the public surface is intentionally
 /// stateless.
 public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
-    /// SQLite stores `NSDate` timestamps as seconds since the Core Data
-    /// epoch (`2001-01-01 00:00:00 UTC`). Construct ``Date`` values
-    /// using ``Date/init(timeIntervalSinceReferenceDate:)``.
-    private static let referenceEpoch = Date(timeIntervalSinceReferenceDate: 0)
-
     /// The canonical table name the reader expects. If macOS renames
     /// it, ``recordings()`` throws ``CloudRecordingsError/schemaUnrecognized(reason:)``.
     private static let expectedTableName = "ZCLOUDRECORDING"
@@ -143,12 +140,16 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
                     reason: message
                 )
             }
-            throw CloudRecordingsError.sqliteOpenFailed(
-                reason: "prepare failed: \(message)"
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_prepare_v2",
+                code: prepareResult,
+                reason: message
             )
         }
         guard let statement else {
-            throw CloudRecordingsError.sqliteOpenFailed(
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_prepare_v2",
+                code: 0,
                 reason: "prepare returned a nil statement handle"
             )
         }
@@ -161,8 +162,10 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
                 break
             }
             if stepResult != SQLITE_ROW {
-                throw CloudRecordingsError.sqliteOpenFailed(
-                    reason: "step failed: \(lastErrorMessage(handle: handle))"
+                throw CloudRecordingsError.sqliteOperationFailed(
+                    operation: "sqlite3_step",
+                    code: stepResult,
+                    reason: lastErrorMessage(handle: handle)
                 )
             }
 
@@ -173,8 +176,6 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
             // table-column reordering.
             let primaryKey = sqlite3_column_int64(statement, 0)
             let title = readText(statement, column: 1)
-            let date = sqlite3_column_double(statement, 2)
-            let duration = sqlite3_column_double(statement, 3)
             let path = readText(statement, column: 4)
 
             // Treat NULL/empty path as unusable — the resolver can't
@@ -185,6 +186,22 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
             guard let path, !path.isEmpty else {
                 continue
             }
+
+            // `sqlite3_column_double` returns `0.0` for NULL columns
+            // with no way to distinguish that from a genuine zero. A
+            // NULL `ZDATE` would silently become the Core Data epoch
+            // (~2001-01-01) — poisoning recency ordering and any date
+            // filter — and a NULL `ZDURATION` would become a zero-length
+            // memo. Skip such rows; partial metadata corrupts the
+            // index more than a missing entry. Mirrors the empty-ZPATH
+            // policy above.
+            if sqlite3_column_type(statement, 2) == SQLITE_NULL
+                || sqlite3_column_type(statement, 3) == SQLITE_NULL {
+                continue
+            }
+
+            let date = sqlite3_column_double(statement, 2)
+            let duration = sqlite3_column_double(statement, 3)
 
             let identifier = String(primaryKey)
             let fallbackTitle = URL(fileURLWithPath: path)
@@ -234,7 +251,11 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
             let message = handle.map { lastErrorMessage(handle: $0) }
                 ?? "sqlite3_open_v2 returned \(openResult)"
             sqlite3_close(handle)
-            throw CloudRecordingsError.sqliteOpenFailed(reason: message)
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_open_v2",
+                code: openResult,
+                reason: message
+            )
         }
         return handle
     }
@@ -252,8 +273,10 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
         let prepareResult = sqlite3_prepare_v2(handle, sql, -1, &statement, nil)
         guard prepareResult == SQLITE_OK, let statement else {
             sqlite3_finalize(statement)
-            throw CloudRecordingsError.sqliteOpenFailed(
-                reason: "sqlite_master probe failed: \(lastErrorMessage(handle: handle))"
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_prepare_v2",
+                code: prepareResult,
+                reason: "sqlite_master probe: \(lastErrorMessage(handle: handle))"
             )
         }
         defer { sqlite3_finalize(statement) }
@@ -267,8 +290,10 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
         )
         let bindResult = sqlite3_bind_text(statement, 1, name, -1, transient)
         guard bindResult == SQLITE_OK else {
-            throw CloudRecordingsError.sqliteOpenFailed(
-                reason: "sqlite3_bind_text failed: \(lastErrorMessage(handle: handle))"
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_bind_text",
+                code: bindResult,
+                reason: lastErrorMessage(handle: handle)
             )
         }
 
@@ -279,8 +304,10 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
             )
         }
         if stepResult != SQLITE_ROW {
-            throw CloudRecordingsError.sqliteOpenFailed(
-                reason: "sqlite_master step failed: \(lastErrorMessage(handle: handle))"
+            throw CloudRecordingsError.sqliteOperationFailed(
+                operation: "sqlite3_step",
+                code: stepResult,
+                reason: "sqlite_master probe: \(lastErrorMessage(handle: handle))"
             )
         }
     }

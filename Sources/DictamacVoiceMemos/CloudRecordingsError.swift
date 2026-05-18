@@ -18,12 +18,21 @@ public enum CloudRecordingsError: Error, CustomStringConvertible {
     /// user-visible error.
     case sqliteUnavailable(reason: String)
 
-    /// `sqlite3_open_v2` succeeded in finding the file but failed to
-    /// open it (corrupt header, lock contention, kernel-level
-    /// permission denial that slipped past TCC, etc.). The caller
-    /// should still attempt the filesystem fallback — the database
-    /// may have been mid-write when we tried to read it.
-    case sqliteOpenFailed(reason: String)
+    /// A SQLite call failed during `recordings()` — `open`, `prepare`,
+    /// `bind`, or `step`. Corrupt headers, lock contention, kernel-level
+    /// permission denials that slipped past TCC, malformed databases at
+    /// the configured path, and read-time row corruption all surface
+    /// here. The caller should still attempt the filesystem fallback —
+    /// the database may have been mid-write when we tried to read it.
+    ///
+    /// `operation` names the SQLite primitive that failed (e.g.
+    /// `"sqlite3_open_v2"`, `"sqlite3_prepare_v2"`, `"sqlite3_step"`)
+    /// so callers can route diagnostics without parsing `reason`.
+    /// `code` carries the raw SQLite result code (e.g. `SQLITE_CORRUPT`,
+    /// `SQLITE_NOTADB`) for the same purpose; it is `0` when the
+    /// underlying failure did not produce a SQLite result code
+    /// (e.g. a nil statement handle from `prepare`).
+    case sqliteOperationFailed(operation: String, code: Int32, reason: String)
 
     /// A required table or column is missing from the schema — Apple
     /// has changed `CloudRecordings.db`'s private structure. The
@@ -36,8 +45,8 @@ public enum CloudRecordingsError: Error, CustomStringConvertible {
         switch self {
         case .sqliteUnavailable(let reason):
             return "CloudRecordings SQLite unavailable: \(reason)"
-        case .sqliteOpenFailed(let reason):
-            return "CloudRecordings SQLite open failed: \(reason)"
+        case .sqliteOperationFailed(let operation, let code, let reason):
+            return "CloudRecordings SQLite \(operation) failed (code \(code)): \(reason)"
         case .schemaUnrecognized(let reason):
             return "CloudRecordings SQLite schema unrecognized: \(reason)"
         }
