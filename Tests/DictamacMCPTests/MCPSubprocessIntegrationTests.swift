@@ -44,14 +44,23 @@ import Testing
 ///
 /// ## Skip semantics
 ///
-/// The test self-skips (records a Swift Testing `Issue` and returns
-/// without failing) when any of the following hold:
+/// The test **skips by default**: it only runs when
+/// `DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1` is set in the environment. The
+/// canonical invocation is `make test-integration`, which depends on
+/// `make build` (so the binary is freshly compiled + signed) and sets
+/// the env var on the way through. Running `make test` or `swift test`
+/// directly skips the test — important because the `.build/release/dictamac`
+/// binary may be stale from an earlier checkout, and running this test
+/// against a stale binary would mask MCP regressions or cause spurious
+/// failures after a protocol/schema change.
 ///
-/// - `DICTAMAC_SKIP_INTEGRATION_TESTS=1` in the environment (lets CI
-///   opt out when the runner doesn't have the en-US locale model).
+/// Additional skip guards (defensive, all paired with `.warning`
+/// severity so they surface in test output without flipping the suite
+/// red):
+///
 /// - The built binary at `<repo>/.build/release/dictamac` does not
-///   exist (run `make build` first — `swift test` alone does not build
-///   or sign the executable target).
+///   exist. Surfaced as a hint to run `make test-integration` (which
+///   guarantees a fresh build).
 /// - The repo root cannot be located by walking up from
 ///   `Bundle.module.bundleURL` looking for `Package.swift`. This
 ///   shouldn't happen in practice but the lookup is defensive.
@@ -72,8 +81,9 @@ import Testing
 /// it forcefully and reports a clear failure rather than hanging CI.
 /// A warm en-US model produces the full 3-request exchange in well
 /// under half a second on developer hardware; first-run / cold-model
-/// scenarios that need more than 10s are precisely the case
-/// `DICTAMAC_SKIP_INTEGRATION_TESTS=1` is meant to opt out of.
+/// scenarios that need more than 10s should just stay opted out
+/// (don't set `DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1`) — the test only
+/// makes sense for environments where the model is already installed.
 @Suite(.serialized)
 struct MCPSubprocessIntegrationTests {
 
@@ -94,9 +104,19 @@ struct MCPSubprocessIntegrationTests {
         // `severity: .warning` issues as informational. See
         // `SpeechAPILocaleModelCheckerIntegrationTests` for the
         // companion pattern on the speech track.
-        if ProcessInfo.processInfo.environment["DICTAMAC_SKIP_INTEGRATION_TESTS"] == "1" {
+        // Opt-in by design: skip unless DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1
+        // is set. This guards against running against a stale
+        // .build/release/dictamac when invoked via plain `swift test` —
+        // see the type-level doc comment. `make test-integration` does
+        // a fresh build + sign, then sets this env var.
+        if ProcessInfo.processInfo.environment["DICTAMAC_RUN_MCP_SUBPROCESS_TEST"] != "1" {
             Issue.record(
-                "skipped: DICTAMAC_SKIP_INTEGRATION_TESTS=1 set in the environment",
+                """
+                skipped: DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1 not set. \
+                Use `make test-integration` for a fresh-build run, or \
+                set the env var explicitly if you've just rebuilt the \
+                binary.
+                """,
                 severity: .warning
             )
             return
@@ -224,8 +244,8 @@ struct MCPSubprocessIntegrationTests {
             Issue.record("""
                 subprocess did not exit within \(Self.subprocessTimeout); \
                 forcing kill. If this fires repeatedly the en-US locale \
-                model may be missing — set \
-                DICTAMAC_SKIP_INTEGRATION_TESTS=1 to opt out.
+                model may be missing — leave DICTAMAC_RUN_MCP_SUBPROCESS_TEST \
+                unset to skip until the model is installed.
                 """)
             process.terminate()
             usleep(100_000)

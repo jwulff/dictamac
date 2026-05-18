@@ -29,18 +29,20 @@ sign:
 		--force "$(BINARY)"
 
 # `make test` runs the full suite via `swift test`. The MCP subprocess
-# integration test (see #28) requires the signed release binary at
-# `.build/release/dictamac` — without it the test self-skips with a
-# warning. For full coverage, run `make build && make test` (or use
-# the `test-integration` target which depends on `build`).
+# integration test (see #28) skips by default because it can only
+# exercise an explicitly-fresh signed binary — running it against a
+# stale `.build/release/dictamac` would hide MCP regressions or yield
+# spurious failures after a protocol/schema change. Use
+# `make test-integration` to do a fresh build and opt in.
 test:
 	swift test
 
-# Convenience target that guarantees the signed binary is present
-# before invoking the suite, so the MCP subprocess integration test
-# runs end-to-end instead of skipping.
+# Convenience target that guarantees a fresh signed binary, then opts
+# the MCP subprocess integration test into running via the
+# `DICTAMAC_RUN_MCP_SUBPROCESS_TEST` env var. The dependency on `build`
+# guarantees no stale-binary scenario.
 test-integration: build
-	swift test
+	DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1 swift test
 
 run: build-debug
 	.build/debug/dictamac $(ARGS)

@@ -33,20 +33,30 @@ Files:
   any stderr line that decodes as a JSON-RPC envelope fails the
   test (channel mis-routing guard).
 - `Makefile` — added a `test-integration` target that depends on
-  `build` so the signed binary is guaranteed present before the
-  suite runs end-to-end. The default `test` target is unchanged
-  (the integration test self-skips when the binary is absent).
+  `build` (so the signed binary is guaranteed fresh) and sets
+  `DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1` to opt the subprocess test
+  in. The default `test` target is unchanged; the subprocess test
+  skips by default there.
 
 ## How it skips
+
+The test is **opt-in by design**: it skips by default and only
+runs when `DICTAMAC_RUN_MCP_SUBPROCESS_TEST=1` is set in the
+environment. `make test-integration` is the canonical invocation —
+it depends on `make build` so the binary is always freshly compiled
+and signed, then sets the env var. Plain `swift test` (or
+`make test`) skips the subprocess test because running it against a
+stale `.build/release/dictamac` would mask MCP regressions or yield
+spurious failures after a protocol/schema change.
 
 The test records a `.warning`-severity `Issue` (not `.error`) and
 returns when any of these hold:
 
-- `DICTAMAC_SKIP_INTEGRATION_TESTS=1` is set — CI escape hatch
-  for runners that don't have the en-US locale model installed.
-- `<repo>/.build/release/dictamac` is absent — `swift test`
-  alone doesn't build or sign the executable target. The error
-  message points the operator at `make build`.
+- `DICTAMAC_RUN_MCP_SUBPROCESS_TEST` is not set or is set to
+  something other than `1` — the default-skip path described above.
+- `<repo>/.build/release/dictamac` is absent — even with the env
+  var set, the binary still has to exist. The error message points
+  the operator at `make test-integration`.
 - The repo root can't be located by walking up from
   `Bundle.module.bundleURL`. Defensive — shouldn't fire in
   practice.
@@ -103,8 +113,8 @@ launch or the binary takes `SIGTRAP` on first touch. `make build`
 runs `codesign --entitlements …` after the link step; the test
 depends on that artifact being present. The acceptance criterion
 "the test must depend on `make build` so signing happens, not
-invoke `swift run`" (#28 Notes) is satisfied by the self-skip
-gate.
+invoke `swift run`" (#28 Notes) is satisfied by `make test-integration`
+depending on `build` and the default-skip gate elsewhere.
 
 ## End-to-end verification
 
