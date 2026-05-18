@@ -1,6 +1,6 @@
 # Add MCP tools/call dispatcher with transcribe_file wired
 
-PR: TBD
+PR: #52
 Issues: Closes #26 (Refs #5)
 
 ## What changed

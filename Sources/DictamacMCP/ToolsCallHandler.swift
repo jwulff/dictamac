@@ -68,7 +68,7 @@ public struct MCPToolsCallHandler: Sendable {
     /// the tool's result envelope (success or `isError: true`).
     public func handle(params: JSONValue?) async throws -> JSONValue {
         let toolName = try Self.extractToolName(from: params)
-        let arguments = Self.extractArguments(from: params)
+        let arguments = try Self.extractArguments(from: params)
 
         switch toolName {
         case "transcribe_file":
@@ -133,14 +133,14 @@ public struct MCPToolsCallHandler: Sendable {
             let rendered = Self.render(transcript: transcript, format: format)
             return Self.toolSuccessEnvelope(text: rendered)
         } catch let error as DictamacError {
-            return Self.toolErrorEnvelope(error.description)
+            return Self.toolErrorEnvelope(error.mcpToolErrorText)
         } catch {
             // Anything that escapes ``DictamacError`` classification
             // still becomes a tool-level error envelope, wrapped in the
             // generic internal-failure mapping so behaviour parity
             // with the CLI's catch-all path holds.
             return Self.toolErrorEnvelope(
-                DictamacError.internalFailure(error).description
+                DictamacError.internalFailure(error).mcpToolErrorText
             )
         }
     }
@@ -231,12 +231,23 @@ public struct MCPToolsCallHandler: Sendable {
     }
 
     /// `arguments` is optional in the MCP spec — a tool may take no
-    /// arguments. We always return a dictionary (empty when absent) so
-    /// per-tool handlers can index it without an extra guard.
-    private static func extractArguments(from params: JSONValue?) -> [String: JSONValue] {
-        guard case .object(let object) = params,
-              case .object(let arguments) = object["arguments"] else {
+    /// arguments. When absent we return an empty dictionary so per-tool
+    /// handlers can index it without an extra guard. When present but
+    /// the wrong shape (array, string, number, etc.) we raise `-32602`
+    /// at the protocol layer rather than silently treating it as
+    /// missing — a malformed `arguments` is a protocol-shape violation,
+    /// not a failed tool execution.
+    private static func extractArguments(from params: JSONValue?) throws -> [String: JSONValue] {
+        guard case .object(let object) = params else {
             return [:]
+        }
+        guard let argumentsValue = object["arguments"] else {
+            return [:]
+        }
+        guard case .object(let arguments) = argumentsValue else {
+            throw MCPProtocolError.invalidParams(
+                "tools/call 'arguments' must be a JSON object when present."
+            )
         }
         return arguments
     }

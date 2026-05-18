@@ -217,6 +217,40 @@ struct ToolsCallTests {
         }
     }
 
+    @Test func toolsCallArgumentsArrayRaisesInvalidParams() async throws {
+        // `arguments: []` is a protocol-shape violation. Without the
+        // explicit type check the handler would silently treat it as
+        // missing arguments and proceed into `list_voice_memos` (which
+        // has no required params), masking a malformed invocation.
+        let (handler, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("list_voice_memos"),
+                "arguments": .array([]),
+            ]))
+        }
+    }
+
+    @Test func toolsCallArgumentsStringRaisesInvalidParams() async throws {
+        let (handler, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("transcribe_file"),
+                "arguments": .string("not an object"),
+            ]))
+        }
+    }
+
+    @Test func toolsCallArgumentsNumberRaisesInvalidParams() async throws {
+        let (handler, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("transcribe_file"),
+                "arguments": .int(42),
+            ]))
+        }
+    }
+
     // MARK: - Unknown tool name -> isError, NOT -32601
 
     @Test func unknownToolNameReturnsErrorEnvelopeNotJsonRpcError() async throws {
