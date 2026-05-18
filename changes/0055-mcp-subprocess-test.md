@@ -1,6 +1,6 @@
 # Add subprocess integration test for MCP
 
-PR: #54 (TBD — orchestrator renames)
+PR: #55
 Issues: Closes #28 (Refs #5)
 
 ## What changed
