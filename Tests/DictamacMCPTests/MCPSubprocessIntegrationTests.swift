@@ -1,0 +1,488 @@
+import Foundation
+import Darwin
+import Testing
+@testable import DictamacMCP
+
+/// End-to-end integration test that spawns the built `dictamac --mcp`
+/// binary as a real subprocess and drives a full JSON-RPC handshake
+/// across its stdin/stdout pipes.
+///
+/// This is the only test that exercises the MCP transport the way a real
+/// MCP client (an agent harness, Claude, etc.) does — process boundary,
+/// real `\n`-framed line buffering, real stdout vs. stderr separation,
+/// and real process lifecycle. The in-process tests in
+/// ``MCPServerTests``, ``InitializeHandlerTests``, ``ToolsListHandlerTests``,
+/// and ``ToolsCallTests`` cover the protocol shape but cannot catch
+/// regressions in signing / entitlement breakage or process lifecycle.
+///
+/// ## Why we send all requests up-front then close stdin
+///
+/// On macOS 26 + Swift 6.3 there is a Foundation regression where
+/// `FileHandle.read(upToCount:)` (the call ``MCPServer`` uses to peel
+/// JSON-RPC lines off stdin) does NOT return as soon as bytes are
+/// available on a pipe; it blocks until either the buffer fills (~4096
+/// bytes) or the writer closes the pipe. That mirrors how a real MCP
+/// client driving the binary via a shell pipe (`echo … | dictamac
+/// --mcp`) works — the shell closes stdin immediately after writing —
+/// but it means a streaming-write-then-read pattern from a test
+/// driver hangs.
+///
+/// The integration test bundles all three requests into a single batch
+/// write, closes stdin, then drains stdout once the subprocess exits.
+/// That is the same I/O pattern every in-process test in this target
+/// uses (see ``MCPServerTests.dispatchesRegisteredHandlerAndWritesSuccessResponse``),
+/// and it is sufficient to exercise the process boundary, the signing
+/// /entitlement requirements, and stdout/stderr discipline that the
+/// in-process tests cannot catch.
+///
+/// ## Skip semantics
+///
+/// The test self-skips (records a Swift Testing `Issue` and returns
+/// without failing) when any of the following hold:
+///
+/// - `DICTAMAC_SKIP_INTEGRATION_TESTS=1` in the environment (lets CI
+///   opt out when the runner doesn't have the en-US locale model).
+/// - The built binary at `<repo>/.build/release/dictamac` does not
+///   exist (run `make build` first — `swift test` alone does not build
+///   or sign the executable target).
+/// - The repo root cannot be located by walking up from
+///   `Bundle.module.bundleURL` looking for `Package.swift`. This
+///   shouldn't happen in practice but the lookup is defensive.
+///
+/// ## Why we don't just `swift run`
+///
+/// `swift run` skips code-signing. The `SpeechAnalyzer` framework
+/// requires the `disable-library-validation` + `allow-jit` entitlements
+/// to be present at launch or the binary takes a `SIGTRAP` on first
+/// touch. `make build` runs `codesign --entitlements …` after the link
+/// step; the test depends on that artifact being present.
+///
+/// ## Timeout
+///
+/// The whole subprocess lifetime is bounded to 10 seconds. If the
+/// subprocess hangs (e.g. the locale model needs to download on a
+/// slow link, or the in-process MCP loop deadlocks) the test kills
+/// it forcefully and reports a clear failure rather than hanging CI.
+/// A warm en-US model produces the full 3-request exchange in well
+/// under half a second on developer hardware; first-run / cold-model
+/// scenarios that need more than 10s are precisely the case
+/// `DICTAMAC_SKIP_INTEGRATION_TESTS=1` is meant to opt out of.
+@Suite(.serialized)
+struct MCPSubprocessIntegrationTests {
+
+    /// Hard cap on the whole subprocess exchange. Documented at the
+    /// type level; pulled out as a constant so the same value is used
+    /// for both the kill-deadline and the timeout error message.
+    private static let subprocessTimeout: DispatchTimeInterval = .seconds(10)
+
+    // MARK: - Top-level integration test
+
+    @Test func subprocessHandshakeListsToolsAndTranscribesFixture() async throws {
+        // ── Preflight ────────────────────────────────────────────────
+        // Skip semantics: every guard below records a `.warning`
+        // severity issue (not `.error`) so the test surfaces a clear
+        // diagnostic line in CI without flipping the suite red. A
+        // warning is reported in the test output and visible to the
+        // operator but does not fail the run — Swift Testing treats
+        // `severity: .warning` issues as informational. See
+        // `SpeechAPILocaleModelCheckerIntegrationTests` for the
+        // companion pattern on the speech track.
+        if ProcessInfo.processInfo.environment["DICTAMAC_SKIP_INTEGRATION_TESTS"] == "1" {
+            Issue.record(
+                "skipped: DICTAMAC_SKIP_INTEGRATION_TESTS=1 set in the environment",
+                severity: .warning
+            )
+            return
+        }
+
+        guard let repoRoot = locateRepoRoot() else {
+            Issue.record(
+                """
+                skipped: could not locate repo root from \
+                Bundle.module.bundleURL (\(Bundle.module.bundleURL.path)). \
+                Expected to find Package.swift by walking up.
+                """,
+                severity: .warning
+            )
+            return
+        }
+
+        let binaryURL = repoRoot
+            .appendingPathComponent(".build")
+            .appendingPathComponent("release")
+            .appendingPathComponent("dictamac")
+
+        guard FileManager.default.fileExists(atPath: binaryURL.path) else {
+            Issue.record(
+                """
+                skipped: \(binaryURL.path) not found — run `make build` \
+                first. `swift test` alone does not build (or sign) the \
+                dictamac executable target.
+                """,
+                severity: .warning
+            )
+            return
+        }
+
+        let fixtureURL = repoRoot
+            .appendingPathComponent("Tests")
+            .appendingPathComponent("DictamacSpeechTests")
+            .appendingPathComponent("Fixtures")
+            .appendingPathComponent("hello-world.m4a")
+
+        guard FileManager.default.fileExists(atPath: fixtureURL.path) else {
+            Issue.record(
+                "skipped: en-US fixture missing at \(fixtureURL.path)",
+                severity: .warning
+            )
+            return
+        }
+
+        // ── Build the request batch ─────────────────────────────────
+        let initializeRequest =
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
+        let toolsListRequest =
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
+
+        // Encode the tools/call request via JSONEncoder so the absolute
+        // fixture path is properly escaped if it contains anything
+        // surprising. Single-line JSON, no pretty-printing — that's the
+        // wire format the MCP framing depends on.
+        let callRequestPayload: [String: JSONValue] = [
+            "jsonrpc": .string("2.0"),
+            "id": .int(3),
+            "method": .string("tools/call"),
+            "params": .object([
+                "name": .string("transcribe_file"),
+                "arguments": .object([
+                    "path": .string(fixtureURL.path),
+                ]),
+            ]),
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let callRequestData = try encoder.encode(JSONValue.object(callRequestPayload))
+        let callRequest = String(decoding: callRequestData, as: UTF8.self)
+
+        let sentRequests = [initializeRequest, toolsListRequest, callRequest]
+        let stdinPayload = (sentRequests.joined(separator: "\n") + "\n").data(using: .utf8) ?? Data()
+
+        // ── Spawn ───────────────────────────────────────────────────
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        let process = Process()
+        process.executableURL = binaryURL
+        process.arguments = ["--mcp"]
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            Issue.record("failed to spawn \(binaryURL.path): \(error)")
+            return
+        }
+
+        // Belt-and-braces: even if a `#expect` triggers an early return
+        // path, ensure the subprocess is reaped before the test exits.
+        defer {
+            if process.isRunning {
+                process.terminate()
+                usleep(100_000)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+        }
+
+        // Write all requests at once, then close stdin so the
+        // subprocess's read loop sees EOF and drains. Closing the
+        // writer signals end-of-input to the MCPServer's `readNextLine`,
+        // which then returns the final request from its internal
+        // buffer.
+        do {
+            try stdinPipe.fileHandleForWriting.write(contentsOf: stdinPayload)
+            try stdinPipe.fileHandleForWriting.close()
+        } catch {
+            Issue.record("failed to write/close subprocess stdin: \(error)")
+            return
+        }
+
+        // ── Wait for the subprocess to exit (bounded) ────────────────
+        let exited = waitForProcessExit(process, timeout: Self.subprocessTimeout)
+        if !exited {
+            Issue.record("""
+                subprocess did not exit within \(Self.subprocessTimeout); \
+                forcing kill. If this fires repeatedly the en-US locale \
+                model may be missing — set \
+                DICTAMAC_SKIP_INTEGRATION_TESTS=1 to opt out.
+                """)
+            process.terminate()
+            usleep(100_000)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            return
+        }
+
+        // ── Drain pipes after exit ──────────────────────────────────
+        // Use posix `read(2)` on the underlying fd — see the
+        // ``StreamingLineReader`` docs for why we don't use
+        // `FileHandle.readDataToEndOfFile()` on macOS 26.
+        let stdoutData = drainPipeToEnd(stdoutPipe.fileHandleForReading)
+        let stderrData = drainPipeToEnd(stderrPipe.fileHandleForReading)
+
+        let stdoutString = String(decoding: stdoutData, as: UTF8.self)
+        let stderrString = String(decoding: stderrData, as: UTF8.self)
+
+        // Diagnostic transcript: surface every JSON-RPC byte the test
+        // saw to make failure investigation cheap. Always print so the
+        // exchange is right there in the Swift Testing output when the
+        // test breaks two years from now.
+        print("--- subprocess JSON-RPC exchange ---")
+        for (i, sent) in sentRequests.enumerated() {
+            print("→ [\(i + 1)] \(sent)")
+        }
+        print("--- subprocess stdout (\(stdoutData.count) bytes) ---")
+        print(stdoutString.isEmpty ? "<empty>" : stdoutString)
+        if !stderrString.isEmpty {
+            print("--- subprocess stderr (\(stderrData.count) bytes) ---")
+            print(stderrString)
+        }
+        print("--- subprocess exit ---")
+        print("terminationStatus=\(process.terminationStatus) terminationReason=\(process.terminationReason.rawValue)")
+
+        // ── Decode and assert ────────────────────────────────────────
+        let stdoutLines = stdoutString
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        // Stdout discipline: every line on stdout must be a valid
+        // JSON-RPC envelope. A stray diagnostic on stdout would corrupt
+        // the channel for any real MCP client.
+        let decoder = JSONDecoder()
+        var responses: [JSONRPCResponse] = []
+        for line in stdoutLines {
+            do {
+                let response = try decoder.decode(
+                    JSONRPCResponse.self,
+                    from: Data(line.utf8)
+                )
+                responses.append(response)
+            } catch {
+                Issue.record(
+                    """
+                    stdout discipline violated: line did not parse as a \
+                    JSON-RPC response: \(line). Decode error: \(error)
+                    """
+                )
+            }
+        }
+
+        #expect(
+            responses.count == sentRequests.count,
+            "expected \(sentRequests.count) JSON-RPC responses; got \(responses.count). Lines: \(stdoutLines)"
+        )
+
+        guard responses.count >= sentRequests.count else {
+            // Subsequent assertions would index past the end. We've
+            // already recorded the count mismatch above; bail.
+            return
+        }
+
+        // ── 1. initialize ───────────────────────────────────────────
+        let initializeResponse = responses[0]
+        #expect(initializeResponse.id == .int(1))
+        #expect(initializeResponse.error == nil)
+
+        guard case .object(let initResult) = initializeResponse.result else {
+            Issue.record("initialize result must be an object; got \(String(describing: initializeResponse.result))")
+            return
+        }
+        #expect(initResult["protocolVersion"] == .string(mcpProtocolVersion))
+
+        guard case .object(let serverInfo) = initResult["serverInfo"] else {
+            Issue.record("initialize result missing serverInfo")
+            return
+        }
+        #expect(serverInfo["name"] == .string("dictamac"))
+        #expect(serverInfo["vendor"] == .string("jwulff"))
+
+        guard case .object(let capabilities) = initResult["capabilities"] else {
+            Issue.record("initialize result missing capabilities")
+            return
+        }
+        // Capabilities must declare ONLY `tools`. Negative-space
+        // assertion: any future addition (resources/prompts/sampling)
+        // must update this list deliberately.
+        #expect(
+            capabilities.keys.sorted() == ["tools"],
+            "expected only `tools` capability; got keys \(capabilities.keys.sorted())"
+        )
+
+        // ── 2. tools/list ──────────────────────────────────────────
+        let toolsListResponse = responses[1]
+        #expect(toolsListResponse.id == .int(2))
+        #expect(toolsListResponse.error == nil)
+
+        guard case .object(let toolsResult) = toolsListResponse.result,
+              case .array(let tools) = toolsResult["tools"] else {
+            Issue.record("tools/list result malformed: \(String(describing: toolsListResponse.result))")
+            return
+        }
+        let names: [String] = tools.compactMap { tool in
+            if case .object(let obj) = tool,
+               case .string(let name) = obj["name"] {
+                return name
+            }
+            return nil
+        }
+        #expect(
+            names == ["transcribe_file", "transcribe_voice_memo", "list_voice_memos"],
+            "tools/list must advertise all three tools in spec order; got \(names)"
+        )
+
+        // Each tool entry must carry the JSON-Schema triplet.
+        for tool in tools {
+            guard case .object(let obj) = tool else {
+                Issue.record("tool entry not an object")
+                continue
+            }
+            #expect(obj["name"] != nil, "tool missing 'name'")
+            #expect(obj["description"] != nil, "tool missing 'description'")
+            #expect(obj["inputSchema"] != nil, "tool missing 'inputSchema'")
+        }
+
+        // ── 3. tools/call transcribe_file against the fixture ──────
+        let callResponse = responses[2]
+        #expect(callResponse.id == .int(3))
+        #expect(callResponse.error == nil, "tools/call returned JSON-RPC error: \(String(describing: callResponse.error))")
+
+        guard case .object(let callResult) = callResponse.result else {
+            Issue.record("tools/call result not an object: \(String(describing: callResponse.result))")
+            return
+        }
+        // isError must NOT be true (default is absent/false).
+        if case .bool(true) = callResult["isError"] ?? .null {
+            Issue.record("tools/call returned isError:true envelope: \(callResult)")
+        }
+        guard case .array(let content) = callResult["content"] else {
+            Issue.record("tools/call result missing content array")
+            return
+        }
+        #expect(content.count >= 1, "expected at least one content item")
+
+        // Find the first text content item and assert it contains at
+        // least one of the expected tokens (case-insensitive). Model
+        // output varies between runs — capitalization, punctuation,
+        // word substitutions — but the lexical content is stable.
+        var textBlob = ""
+        var sawTextContent = false
+        for item in content {
+            if case .object(let obj) = item,
+               case .string("text") = obj["type"] ?? .null,
+               case .string(let text) = obj["text"] ?? .null {
+                textBlob += text
+                sawTextContent = true
+            }
+        }
+        #expect(sawTextContent, "expected at least one content item of type=text")
+
+        let lowered = textBlob.lowercased()
+        let expectedTokens = ["hello", "world", "test"]
+        let foundToken = expectedTokens.first(where: { lowered.contains($0) })
+        #expect(
+            foundToken != nil,
+            "transcript text \"\(textBlob)\" did not contain any of \(expectedTokens)"
+        )
+
+        // ── Stderr discipline ─────────────────────────────────────
+        // Stderr is allowed to carry locale-model progress lines,
+        // diagnostics, etc. — we don't assert on its content. But it
+        // MUST NOT contain a JSON-RPC envelope: that would mean the
+        // transport mis-routed a response onto the wrong channel.
+        if !stderrString.isEmpty {
+            for line in stderrString.split(separator: "\n", omittingEmptySubsequences: true) {
+                if let lineData = line.data(using: .utf8),
+                   (try? decoder.decode(JSONRPCResponse.self, from: lineData)) != nil {
+                    Issue.record(
+                        "stderr leaked a JSON-RPC response envelope: \(line)"
+                    )
+                }
+            }
+        }
+
+        // ── Clean exit assertion ──────────────────────────────────
+        #expect(process.terminationStatus == 0,
+                "expected clean exit (0); got \(process.terminationStatus) (reason \(process.terminationReason.rawValue))")
+    }
+
+    // MARK: - Helpers — pipe drain
+
+    /// Drain a pipe's read end to EOF using posix `read(2)`. The
+    /// equivalent `FileHandle.readDataToEndOfFile()` shares the same
+    /// blocking-quirk codepath as `FileHandle.read(upToCount:)` on
+    /// macOS 26 — see ``StreamingLineReader`` for the long form.
+    /// Returns immediately if the writer end is closed and the pipe is
+    /// empty.
+    private func drainPipeToEnd(_ handle: FileHandle) -> Data {
+        let fd = handle.fileDescriptor
+        var collected = Data()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = buf.withUnsafeMutableBufferPointer { ptr -> Int in
+                guard let base = ptr.baseAddress else { return -1 }
+                return Darwin.read(fd, base, ptr.count)
+            }
+            if n <= 0 { break }
+            collected.append(Data(buf[0..<n]))
+        }
+        return collected
+    }
+
+    // MARK: - Helpers — process exit
+
+    /// Wait up to `timeout` for the subprocess to exit. Returns true
+    /// if it exited, false if the timeout elapsed.
+    ///
+    /// Uses polling instead of `terminationHandler` to sidestep the
+    /// race where setting the handler post-`run()` misses an exit that
+    /// already happened. 50ms polling is fine — this only fires after
+    /// the test has finished its JSON-RPC exchange and is in cleanup.
+    private func waitForProcessExit(
+        _ process: Process,
+        timeout: DispatchTimeInterval
+    ) -> Bool {
+        let deadline = DispatchTime.now() + timeout
+        while process.isRunning {
+            if DispatchTime.now() >= deadline {
+                return false
+            }
+            usleep(50_000)  // 50ms
+        }
+        return true
+    }
+
+    // MARK: - Helpers — repo root discovery
+
+    /// Walk up from the test bundle URL looking for `Package.swift`.
+    /// Returns the first directory that contains it, or nil if no
+    /// ancestor up to the filesystem root carries the marker.
+    private func locateRepoRoot() -> URL? {
+        var directory = Bundle.module.bundleURL.deletingLastPathComponent()
+        let manifestName = "Package.swift"
+        for _ in 0..<16 {
+            let candidate = directory.appendingPathComponent(manifestName)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return directory
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent == directory { break }
+            directory = parent
+        }
+        return nil
+    }
+}

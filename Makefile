@@ -1,4 +1,4 @@
-.PHONY: build build-debug sign test run install clean
+.PHONY: build build-debug sign test test-integration run install clean
 
 # Default install prefix; override on the command line, e.g. `make install PREFIX=/usr/local`.
 PREFIX ?= $(HOME)/.local
@@ -28,7 +28,18 @@ sign:
 		--entitlements Resources/dictamac.entitlements \
 		--force "$(BINARY)"
 
+# `make test` runs the full suite via `swift test`. The MCP subprocess
+# integration test (see #28) requires the signed release binary at
+# `.build/release/dictamac` — without it the test self-skips with a
+# warning. For full coverage, run `make build && make test` (or use
+# the `test-integration` target which depends on `build`).
 test:
+	swift test
+
+# Convenience target that guarantees the signed binary is present
+# before invoking the suite, so the MCP subprocess integration test
+# runs end-to-end instead of skipping.
+test-integration: build
 	swift test
 
 run: build-debug
