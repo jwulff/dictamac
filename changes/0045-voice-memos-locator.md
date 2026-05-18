@@ -1,6 +1,6 @@
 # Discover Voice Memos library path
 
-PR: TBD
+PR: #45
 Issues: Closes #14 (Refs #4)
 
 ## What changed
