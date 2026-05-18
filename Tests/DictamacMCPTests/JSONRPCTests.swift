@@ -35,7 +35,8 @@ struct JSONRPCTests {
 
         let request = try JSONDecoder().decode(JSONRPCRequest.self, from: line)
         #expect(request.jsonrpc == "2.0")
-        #expect(request.id == .int(1))
+        #expect(request.id == .value(.int(1)))
+        #expect(request.id.isNotification == false)
         #expect(request.method == "foo")
         #expect(request.params == .object(["x": .int(1)]))
     }
@@ -46,7 +47,8 @@ struct JSONRPCTests {
         """.data(using: .utf8)!
 
         let request = try JSONDecoder().decode(JSONRPCRequest.self, from: line)
-        #expect(request.id == nil, "missing id field must decode as a nil id (notification)")
+        #expect(request.id == .absent, "missing id field must decode as .absent (notification)")
+        #expect(request.id.isNotification == true)
         #expect(request.method == "ping")
         #expect(request.params == nil)
     }
@@ -57,7 +59,38 @@ struct JSONRPCTests {
         """.data(using: .utf8)!
 
         let request = try JSONDecoder().decode(JSONRPCRequest.self, from: line)
-        #expect(request.id == .string("req-1"))
+        #expect(request.id == .value(.string("req-1")))
+    }
+
+    @Test func requestDecodesExplicitNullIdAsRequestNotNotification() throws {
+        // Spec §4.1 / §4.2: a request with `"id": null` is NOT a
+        // notification — the server MUST respond and echo back
+        // `"id": null`. Only the *absence* of the id field makes a
+        // request into a notification. The decoder must keep those
+        // two states distinct.
+        let line = """
+        {"jsonrpc":"2.0","id":null,"method":"foo"}
+        """.data(using: .utf8)!
+
+        let request = try JSONDecoder().decode(JSONRPCRequest.self, from: line)
+        #expect(request.id == .null, "explicit null id must decode as .null, not .absent")
+        #expect(request.id.isNotification == false, "null id is a request, not a notification")
+        #expect(request.id.responseID == nil, "null id maps to a nil response id (encoded as JSON null)")
+        #expect(request.method == "foo")
+    }
+
+    @Test func notificationIDFieldExposesIsNotificationFlag() {
+        #expect(JSONRPCIDField.absent.isNotification == true)
+        #expect(JSONRPCIDField.null.isNotification == false)
+        #expect(JSONRPCIDField.value(.int(1)).isNotification == false)
+        #expect(JSONRPCIDField.value(.string("x")).isNotification == false)
+    }
+
+    @Test func responseIDProjectionCollapsesAbsentAndNullToNil() {
+        #expect(JSONRPCIDField.absent.responseID == nil)
+        #expect(JSONRPCIDField.null.responseID == nil)
+        #expect(JSONRPCIDField.value(.int(7)).responseID == .int(7))
+        #expect(JSONRPCIDField.value(.string("z")).responseID == .string("z"))
     }
 
     // MARK: - JSONRPCResponse

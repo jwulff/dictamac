@@ -84,6 +84,36 @@ The `id: null` shape on parse errors is encoded explicitly via
 `container.encodeNil(forKey: .id)` — `encodeIfPresent` would omit the
 key, which violates the spec.
 
+### Three-state request `id` (post-review fix)
+
+Codex review caught that the original `JSONRPCRequest.id: JSONRPCID?`
+collapsed two spec-distinct states into one `nil` value:
+
+- **Field absent** — notification per §4.1; server MUST NOT respond.
+- **Field present and `null`** — request per §4.2; server MUST respond
+  with `"id": null` echoed back.
+- **Field present with string/int** — normal request.
+
+A plain `Optional<JSONRPCID>` cannot tell the first two apart. A
+correct JSON-RPC 2.0 client that sent `"id": null` to invoke a method
+would hang waiting for the response we silently suppressed.
+
+The fix introduces `JSONRPCIDField` — a three-case enum (`absent` /
+`null` / `value(JSONRPCID)`) — and a custom `JSONRPCRequest.init(from:)`
+that uses `container.contains(.id)` plus `container.decodeNil(forKey:)`
+to distinguish all three states on decode. The dispatcher switches on
+`request.id.isNotification` instead of `request.id == nil`; the
+response id is then derived via `request.id.responseID`, which maps
+both `.absent` and `.null` to `nil` (the `.absent` case never reaches
+the response writer in practice). The response side is unchanged —
+`JSONRPCResponse.id == nil` already encodes as JSON `null` via the
+custom encoder added for the parse-error path.
+
+Regression tests cover all three states across the happy path,
+unknown-method (-32601), and invalid-params (-32602) branches. The
+existing notification + malformed-line tests verify the no-response
+and parse-error paths still behave correctly.
+
 ### Stdout discipline (the hard rule)
 
 stdout is the JSON-RPC channel and nothing else. The server has one
@@ -109,7 +139,7 @@ once `tools/call` plugs in.
 
 ## Verified
 
-- `swift test` — 197 tests across 19 suites, all passing (38 of those
+- `swift test` — 203 tests across 19 suites, all passing (44 of those
   are new `DictamacMCPTests`).
 - `make build` — clean release build, ad-hoc signed.
 - E2E:

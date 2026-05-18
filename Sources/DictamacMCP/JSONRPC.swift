@@ -2,17 +2,11 @@ import Foundation
 
 /// JSON-RPC 2.0 request identifier.
 ///
-/// The spec permits a `String`, `Number`, or `null` for the `id` field;
-/// the absence of `id` indicates a notification (no response should be
-/// produced). We model present-ids as a two-case enum (`string` / `int`)
-/// and let the request struct's optional `id` carry the
-/// notification-vs-request distinction so callers can pattern-match on
-/// "is this a notification?" with `request.id == nil`.
-///
-/// Spec §4.2: an explicit JSON `null` id is allowed for requests but
-/// SHOULD be avoided; we accept and round-trip it via
-/// `JSONRPCResponse.id == nil` in the error-response paths (notably the
-/// `-32700 Parse error` case where the original id is unknown).
+/// The spec permits a `String`, `Number`, or `null` for the `id` field.
+/// This enum only carries the *present, non-null* shapes (`string` /
+/// `int`); the "absent" and "explicit null" cases are modelled
+/// separately on a request by ``JSONRPCIDField`` and on a response by
+/// `JSONRPCResponse.id == nil`.
 public enum JSONRPCID: Hashable, Sendable {
     case string(String)
     case int(Int)
@@ -46,22 +40,77 @@ extension JSONRPCID: Codable {
     }
 }
 
+/// Three-state representation of the `id` field on a JSON-RPC request.
+///
+/// The spec (§4.1, §4.2) treats these as semantically distinct cases:
+///
+/// - ``absent`` — the `id` key is missing from the JSON object. This is
+///   a *notification*: the server MUST NOT produce a response, even on
+///   unknown methods or errors.
+/// - ``null`` — the `id` key is present with the literal value `null`.
+///   This is still a *request*: the server MUST produce a response, and
+///   that response MUST echo `"id": null`. Clients are discouraged from
+///   using null ids in practice (§4.2) but the spec requires servers to
+///   handle them correctly.
+/// - ``value(_:)`` — the `id` key is present with a string or integer
+///   value. Normal request: server responds with the same id echoed
+///   back.
+///
+/// Collapsing ``absent`` and ``null`` together — as a plain `JSONRPCID?`
+/// would — produces a spec violation: a client sending `"id": null` to
+/// invoke a method would hang waiting for a response that never comes.
+public enum JSONRPCIDField: Hashable, Sendable {
+    case absent
+    case null
+    case value(JSONRPCID)
+
+    /// True iff this represents a notification (absent id) per
+    /// JSON-RPC 2.0 §4.1. Notifications must not be answered.
+    public var isNotification: Bool {
+        if case .absent = self { return true }
+        return false
+    }
+
+    /// Convert the three-state request id into the two-state response
+    /// id (`JSONRPCID?`), where `nil` encodes as JSON `null`.
+    ///
+    /// This is meaningful only when the caller has already decided a
+    /// response will be written — i.e. the id was not ``absent``. For
+    /// notifications (``absent``) the dispatcher must skip writing a
+    /// response entirely; this method maps the field to `nil` in that
+    /// case too, but the dispatcher should never consult it then.
+    public var responseID: JSONRPCID? {
+        switch self {
+        case .absent, .null:
+            return nil
+        case .value(let id):
+            return id
+        }
+    }
+}
+
 /// A single JSON-RPC 2.0 request envelope.
 ///
-/// `id` is optional because notifications omit it; if `id == nil` after
-/// decoding, the dispatcher executes the handler but does not produce a
-/// response. `params` is a `JSONValue?` rather than a typed model — the
-/// transport doesn't know the per-method param shape, so the handler
-/// decodes it lazily.
+/// `id` is a three-state ``JSONRPCIDField`` rather than a plain
+/// `JSONRPCID?`: the spec assigns distinct meanings to "key absent"
+/// (notification — no response), "key present and null" (request with
+/// null id — response MUST echo `"id": null`), and "key present with
+/// string/int value" (normal request). Collapsing the first two into a
+/// single `nil` would cause the server to drop responses to valid
+/// requests whose client chose to send `"id": null`.
+///
+/// `params` is a `JSONValue?` rather than a typed model — the transport
+/// doesn't know the per-method param shape, so the handler decodes it
+/// lazily.
 public struct JSONRPCRequest: Decodable, Sendable, Equatable {
     public let jsonrpc: String
-    public let id: JSONRPCID?
+    public let id: JSONRPCIDField
     public let method: String
     public let params: JSONValue?
 
     public init(
         jsonrpc: String = "2.0",
-        id: JSONRPCID? = nil,
+        id: JSONRPCIDField = .absent,
         method: String,
         params: JSONValue? = nil
     ) {
@@ -69,6 +118,34 @@ public struct JSONRPCRequest: Decodable, Sendable, Equatable {
         self.id = id
         self.method = method
         self.params = params
+    }
+
+    /// Decoding distinguishes the three id states by inspecting the
+    /// container directly: ``KeyedDecodingContainer/contains(_:)`` tells
+    /// us "key absent", ``KeyedDecodingContainer/decodeNil(forKey:)``
+    /// tells us "key present and null", and anything else falls through
+    /// to a normal ``JSONRPCID`` decode. This is the only place in the
+    /// transport that needs to make that distinction; once the request
+    /// is constructed the dispatcher reads the typed field directly.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.jsonrpc = try container.decodeIfPresent(String.self, forKey: .jsonrpc) ?? "2.0"
+        self.method = try container.decode(String.self, forKey: .method)
+        self.params = try container.decodeIfPresent(JSONValue.self, forKey: .params)
+
+        if container.contains(.id) {
+            if try container.decodeNil(forKey: .id) {
+                self.id = .null
+            } else {
+                self.id = .value(try container.decode(JSONRPCID.self, forKey: .id))
+            }
+        } else {
+            self.id = .absent
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case jsonrpc, id, method, params
     }
 }
 

@@ -217,6 +217,101 @@ struct MCPServerTests {
         #expect(stdout.isEmpty)
     }
 
+    @Test func requestWithExplicitNullIdProducesResponseWithNullId() async throws {
+        // JSON-RPC 2.0 §4.1 / §4.2: a request with `"id": null` is
+        // still a request — the server MUST respond. The response's
+        // id field MUST echo back as JSON `null` (not omitted, not a
+        // value). Only a *missing* id key makes a request into a
+        // notification.
+        let harness = Harness()
+        let received = HandlerCallRecorder()
+        await harness.server.register(method: "explicit-null") { params in
+            await received.record(params)
+            return .string("answered")
+        }
+
+        try harness.send(#"{"jsonrpc":"2.0","id":null,"method":"explicit-null","params":["x"]}"#)
+        try harness.closeInput()
+
+        await harness.runToEOF()
+
+        let stdout = try harness.readAllStdout()
+        let line = stdout.trimmingCharacters(in: .newlines)
+
+        // Assert on raw bytes — a permissive decoder could mask
+        // the difference between `"id":null` and a missing key.
+        #expect(line.contains(#""id":null"#))
+        #expect(line.contains(#""result":"answered""#))
+
+        // Decoded shape should round-trip too.
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(line.utf8)
+        )
+        #expect(response.id == nil)
+        #expect(response.result == .string("answered"))
+        #expect(response.error == nil)
+
+        // And the handler must actually have been invoked.
+        let calls = await received.calls
+        #expect(calls.count == 1)
+        #expect(calls.first == .array([.string("x")]))
+    }
+
+    @Test func unknownMethodWithExplicitNullIdReturnsMethodNotFoundWithNullId() async throws {
+        // -32601 path on the explicit-null-id branch: a client that
+        // sends `"id": null` to an unknown method must still get a
+        // method-not-found response back, with `"id": null`. Otherwise
+        // the client hangs.
+        let harness = Harness()
+
+        try harness.send(#"{"jsonrpc":"2.0","id":null,"method":"never-registered"}"#)
+        try harness.closeInput()
+
+        await harness.runToEOF()
+
+        let stdout = try harness.readAllStdout()
+        let line = stdout.trimmingCharacters(in: .newlines)
+
+        #expect(line.contains(#""id":null"#), "id:null must be echoed back literally")
+        #expect(line.contains(#""code":-32601"#))
+
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(line.utf8)
+        )
+        #expect(response.id == nil)
+        #expect(response.error?.code == -32601)
+        #expect(response.error?.message.contains("Method not found") == true)
+    }
+
+    @Test func invalidParamsHandlerWithExplicitNullIdReturnsErrorWithNullId() async throws {
+        // -32602 path on the explicit-null-id branch.
+        let harness = Harness()
+        await harness.server.register(method: "strict") { _ in
+            throw MCPProtocolError.invalidParams("missing required field 'path'")
+        }
+
+        try harness.send(#"{"jsonrpc":"2.0","id":null,"method":"strict","params":{}}"#)
+        try harness.closeInput()
+
+        await harness.runToEOF()
+
+        let stdout = try harness.readAllStdout()
+        let line = stdout.trimmingCharacters(in: .newlines)
+
+        #expect(line.contains(#""id":null"#))
+        #expect(line.contains(#""code":-32602"#))
+
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: Data(line.utf8)
+        )
+        #expect(response.id == nil)
+        #expect(response.error?.code == -32602)
+        #expect(response.error?.message == "missing required field 'path'")
+    }
+
     @Test func multipleRequestsEachProduceOneLine() async throws {
         let harness = Harness()
         await harness.server.register(method: "count") { params in

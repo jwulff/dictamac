@@ -137,8 +137,12 @@ public actor MCPServer {
 
         // Step 2: notification? Execute the handler if registered, but
         // produce no response — that is the entire definition of a
-        // notification in JSON-RPC 2.0.
-        if request.id == nil {
+        // notification in JSON-RPC 2.0 (§4.1: a notification is a
+        // request WITHOUT the `id` member). An explicit `"id": null`
+        // is NOT a notification — the spec assigns it a distinct
+        // meaning and requires a response with `"id": null` echoed
+        // back. ``JSONRPCIDField`` keeps those two cases apart.
+        if request.id.isNotification {
             if let handler = handlers[request.method] {
                 _ = try? await handler(request.params)
             }
@@ -148,12 +152,19 @@ public actor MCPServer {
             return
         }
 
-        // Step 3: regular request. Dispatch, map throws to the
-        // canonical error codes, serialize the response.
+        // Step 3: regular request (id is either a string/int value or
+        // an explicit JSON null). Dispatch, map throws to the canonical
+        // error codes, serialize the response. ``responseID`` collapses
+        // both "value" and "null" id fields back to the two-state
+        // `JSONRPCID?` the response carries: a `nil` here encodes as
+        // JSON `null`, which is exactly what the explicit-null-id case
+        // requires.
+        let responseID = request.id.responseID
+
         guard let handler = handlers[request.method] else {
             writeResponse(
                 .failure(
-                    id: request.id,
+                    id: responseID,
                     error: .methodNotFound("Method not found: \(request.method)")
                 )
             )
@@ -162,10 +173,10 @@ public actor MCPServer {
 
         do {
             let result = try await handler(request.params)
-            writeResponse(.success(id: request.id, result: result))
+            writeResponse(.success(id: responseID, result: result))
         } catch let MCPProtocolError.invalidParams(message) {
             writeResponse(
-                .failure(id: request.id, error: .invalidParams(message))
+                .failure(id: responseID, error: .invalidParams(message))
             )
         } catch {
             // Anything not modeled as a protocol error becomes
@@ -173,7 +184,7 @@ public actor MCPServer {
             // surfaced so an agent has a fighting chance to diagnose.
             writeResponse(
                 .failure(
-                    id: request.id,
+                    id: responseID,
                     error: .internalError(String(describing: error))
                 )
             )
