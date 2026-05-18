@@ -1,6 +1,6 @@
 # Add MCP `initialize` and `tools/list` handshake
 
-PR: TBD
+PR: #47
 Issues: Closes #22 (Refs #5)
 
 ## What changed
