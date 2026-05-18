@@ -81,6 +81,32 @@ struct TranscriptTests {
         }
     }
 
+    @Test func stdinSourceEncodesToTypeOnly() throws {
+        // The .stdin variant exists precisely so JSON consumers can
+        // distinguish piped input from a real file without seeing a
+        // dangling temp-file path. Encoding must therefore produce
+        // {"type": "stdin"} with NO path / identifier / title keys.
+        let source = TranscriptSource.stdin
+        let dict = try jsonObject(encoding: source)
+        #expect(dict["type"] as? String == "stdin")
+        #expect(dict.keys.contains("path") == false)
+        #expect(dict.keys.contains("identifier") == false)
+        #expect(dict.keys.contains("title") == false)
+    }
+
+    @Test func stdinSourceRoundTrips() throws {
+        let original = TranscriptSource.stdin
+        #expect(try roundTrip(original) == original)
+    }
+
+    @Test func stdinSourceDecodesFromTypeOnlyPayload() throws {
+        // Forward-compat: a hand-written `{"type":"stdin"}` payload
+        // (no extra keys) must decode back to .stdin without error.
+        let json = #"{"type":"stdin"}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(TranscriptSource.self, from: json)
+        #expect(decoded == .stdin)
+    }
+
     // MARK: - Transcript JSON schema
 
     @Test func transcriptVersionConstantIsOne() {

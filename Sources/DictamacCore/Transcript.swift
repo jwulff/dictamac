@@ -47,18 +47,26 @@ public struct TranscriptSegment: Sendable, Equatable, Codable {
 
 /// Descriptor for what produced a ``Transcript`` — recorded in the JSON
 /// output as a tagged object so MCP consumers can distinguish a raw file
-/// input from a Voice Memos lookup.
+/// input from a Voice Memos lookup or a stdin pipe.
 ///
-/// Encoded shapes (PLAN.md §6):
-/// - `.file`     → `{"type": "file", "path": "..."}`
-/// - `.voiceMemo` → `{"type": "voice-memo", "identifier": "...", "title": "..."}`
+/// Encoded shapes:
+/// - `.file`      → `{"type": "file", "path": "..."}` (PLAN.md §6)
+/// - `.voiceMemo` → `{"type": "voice-memo", "identifier": "...", "title": "..."}` (PLAN.md §6)
+/// - `.stdin`     → `{"type": "stdin"}` — no path. Stdin is staged into a
+///   temp file that the CLI deletes after transcribing, so any path here
+///   would be dangling by the time a consumer saw it. The `.stdin` case
+///   carries no payload so consumers can reliably distinguish piped input
+///   from a real file. (Follow-up: PLAN.md §6 to be updated to document
+///   this third source variant — see PR #43 review discussion.)
 public enum TranscriptSource: Sendable, Equatable, Codable {
     case file(path: String)
     case voiceMemo(identifier: String, title: String)
+    case stdin
 
     private enum Discriminator: String, Codable {
         case file
         case voiceMemo = "voice-memo"
+        case stdin
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -75,6 +83,11 @@ public enum TranscriptSource: Sendable, Equatable, Codable {
             try container.encode(Discriminator.voiceMemo, forKey: .type)
             try container.encode(identifier, forKey: .identifier)
             try container.encode(title, forKey: .title)
+        case .stdin:
+            try container.encode(Discriminator.stdin, forKey: .type)
+            // No path / identifier / title — stdin's staged temp file is
+            // deleted immediately after transcription, so any path would
+            // dangle by the time a consumer read the JSON.
         }
     }
 
@@ -89,6 +102,8 @@ public enum TranscriptSource: Sendable, Equatable, Codable {
             let identifier = try container.decode(String.self, forKey: .identifier)
             let title = try container.decode(String.self, forKey: .title)
             self = .voiceMemo(identifier: identifier, title: title)
+        case .stdin:
+            self = .stdin
         }
     }
 }

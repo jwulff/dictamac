@@ -52,6 +52,45 @@ struct JSONFormatterTests {
         try assertSnapshot(JSONFormatter.format(transcript), named: "voice-memo-source")
     }
 
+    @Test func stdinSource() throws {
+        // Per PR #43 review: when stdin is the input, the JSON must
+        // surface `{"type": "stdin"}` with NO `path` key — the staged
+        // temp file is deleted by the time a consumer reads the JSON, so
+        // any path would be dangling. The snapshot pins the exact bytes.
+        let transcript = Transcript(
+            segments: [
+                .init(startSeconds: 0, endSeconds: 3.2, text: "Hello from a pipe.", confidence: 0.91),
+            ],
+            locale: "en-US",
+            durationSeconds: 3.2,
+            model: "SpeechAnalyzer/macOS26",
+            source: .stdin
+        )
+        try assertSnapshot(JSONFormatter.format(transcript), named: "stdin-source")
+    }
+
+    @Test func stdinSourceEmitsNoPathKey() throws {
+        // Belt-and-suspenders alongside the snapshot: parse the JSON
+        // structurally so a regression that re-introduced a dangling
+        // temp path (the original PR-#43 bug) fails this test with a
+        // clear message, not just a snapshot diff.
+        let transcript = Transcript(
+            segments: [],
+            locale: "en-US",
+            durationSeconds: 0,
+            model: "SpeechAnalyzer/macOS26",
+            source: .stdin
+        )
+        let data = try #require(JSONFormatter.format(transcript).data(using: .utf8))
+        let object = try JSONSerialization.jsonObject(with: data)
+        let dict = try #require(object as? [String: Any])
+        let source = try #require(dict["source"] as? [String: Any])
+        #expect(source["type"] as? String == "stdin")
+        #expect(source.keys.contains("path") == false)
+        #expect(source.keys.contains("identifier") == false)
+        #expect(source.keys.contains("title") == false)
+    }
+
     @Test func emptySegments() throws {
         let transcript = Transcript(
             segments: [],

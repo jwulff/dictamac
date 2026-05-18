@@ -1,0 +1,18 @@
+{
+  "durationSeconds" : 3.2,
+  "fullText" : "Hello from a pipe.",
+  "locale" : "en-US",
+  "model" : "SpeechAnalyzer\/macOS26",
+  "segments" : [
+    {
+      "confidence" : 0.91,
+      "endSeconds" : 3.2,
+      "startSeconds" : 0,
+      "text" : "Hello from a pipe."
+    }
+  ],
+  "source" : {
+    "type" : "stdin"
+  },
+  "version" : "1"
+}

@@ -11,10 +11,6 @@ import Foundation
 /// real behavior and these constants disappear.
 public enum StubMessages {
 
-    /// Stdin pipeline lands under issue #27.
-    public static let stdinNotImplemented =
-        "stdin transcription not yet implemented — see #27."
-
     /// Voice Memos epic. The query is preserved verbatim so an agent
     /// that just got "not implemented" still sees what it asked for.
     public static func voiceMemoNotImplemented(query: String) -> String {

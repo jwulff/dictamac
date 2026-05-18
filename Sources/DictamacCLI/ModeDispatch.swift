@@ -38,10 +38,15 @@ public struct ModeHandlers: Sendable {
         self.mcp = mcp
     }
 
-    /// Production handlers used by `Dictamac.run()`. The file handler
-    /// wires through to `DefaultTranscriber`; every other handler
-    /// reports a clean "not yet implemented" error pointing at the
-    /// epic / issue that owns the real work (see `StubMessages`).
+    /// Production handlers used by `Dictamac.run()`. The file and stdin
+    /// handlers route through the shared
+    /// ``runResolveAndTranscribe(source:resolver:transcriber:localeIdentifier:wantsJSON:verbose:writeStdout:writeStderr:exit:)``
+    /// helper so the only difference between them is which
+    /// ``AudioSource`` they pass — fileNotFound (exit 64) and
+    /// audioDecodeFailed (exit 65) are produced by the resolver layer
+    /// for both. Every other handler reports a clean "not yet
+    /// implemented" error pointing at the epic / issue that owns the
+    /// real work (see `StubMessages`).
     ///
     /// `locale` / `wantsJSON` / `verbose` are captured here because
     /// they are static per invocation — the dispatcher itself stays
@@ -51,18 +56,33 @@ public struct ModeHandlers: Sendable {
         wantsJSON: Bool,
         verbose: Bool
     ) -> ModeHandlers {
-        ModeHandlers(
+        // One resolver + one transcriber shared across the file and
+        // stdin handlers — both intakes flow through the same seam
+        // (PLAN.md §7 U3 / U4). Constructed once per invocation so the
+        // closures capture a single, immutable instance.
+        let resolver = DefaultAudioFileResolver()
+        let transcriber = DefaultTranscriber()
+
+        return ModeHandlers(
             file: { path in
-                await runFileTranscription(
-                    path: path,
+                await runResolveAndTranscribe(
+                    source: .path(path),
+                    resolver: resolver,
+                    transcriber: transcriber,
                     localeIdentifier: locale,
                     wantsJSON: wantsJSON,
                     verbose: verbose
                 )
             },
             stdin: {
-                let error = DictamacError.argumentError(StubMessages.stdinNotImplemented)
-                error.exit()
+                await runResolveAndTranscribe(
+                    source: .stdin,
+                    resolver: resolver,
+                    transcriber: transcriber,
+                    localeIdentifier: locale,
+                    wantsJSON: wantsJSON,
+                    verbose: verbose
+                )
             },
             voiceMemo: { query in
                 let error = DictamacError.argumentError(
@@ -107,54 +127,127 @@ public func dispatch(mode: Mode, handlers: ModeHandlers) async {
     }
 }
 
-/// The real file-path handler: expands the path, builds a
-/// `TranscriptionRequest`, drives `DefaultTranscriber`, writes the
-/// rendered transcript to stdout, and exits the process. Mirrors the
-/// runTranscription helper that shipped in PR #40 verbatim; the only
-/// move is from `Sources/dictamac/main.swift` into the library so the
-/// dispatcher can hand work off without `dictamac`-target circular
-/// imports.
-func runFileTranscription(
-    path inputPath: String,
+/// Shared file + stdin pipeline: resolve the audio source, transcribe,
+/// render, write to stdout, exit. Errors from any stage are mapped via
+/// ``DictamacError`` so the exit code matches the PLAN.md §4 contract
+/// regardless of which transport invoked the handler.
+///
+/// Both the file-path and stdin handlers in
+/// ``ModeHandlers/production(locale:wantsJSON:verbose:)`` call this
+/// helper; the only difference is the ``AudioSource`` they pass. This
+/// is the architectural intent from issue #27: file-not-found (exit 64)
+/// and decode-failed/empty-stdin (exit 65) are produced uniformly at
+/// the resolver layer rather than once per handler.
+///
+/// `writeStdout` / `writeStderr` / `exit` are injectable for tests:
+/// production captures `FileHandle.standardOutput`,
+/// `FileHandle.standardError`, and `Darwin.exit(_:)`; tests inject
+/// recorders so they can assert what the production path would have
+/// written and which exit code it would have used.
+///
+/// ## A note on double-validation
+///
+/// The resolver opens the audio file with `AVAudioFile(forReading:)`
+/// to validate decodability up-front. ``DefaultTranscriber`` then opens
+/// it again inside the transcription pipeline. The two opens are
+/// independent: the resolver fail-fast catches structural errors
+/// (missing file, unsupported container) before we spin up
+/// ``SpeechAnalyzer``; the transcriber's open is what
+/// ``SpeechAnalyzer/analyzeSequence(from:)`` consumes. The redundancy
+/// is intentional and small — collapsing them would require a custom
+/// "pre-opened audio file" wire format through
+/// ``TranscriptionRequest``, and the cost of a second open on the same
+/// file is negligible compared to the speech-model bootstrap. See the
+/// changes file for this PR for the full rationale.
+public func runResolveAndTranscribe(
+    source: AudioSource,
+    resolver: any AudioFileResolver,
+    transcriber: any Transcriber,
     localeIdentifier: String,
     wantsJSON: Bool,
-    verbose: Bool
+    verbose: Bool,
+    writeStdout: @Sendable @escaping (String) -> Void = { string in
+        FileHandle.standardOutput.write(Data(string.utf8))
+    },
+    writeStderr: @Sendable @escaping (String) -> Void = { string in
+        FileHandle.standardError.write(Data(string.utf8))
+    },
+    exit: @Sendable @escaping (Int32) -> Void = { code in
+        Darwin.exit(code)
+    }
 ) async {
-    let expanded = (inputPath as NSString).expandingTildeInPath
-    let url = URL(fileURLWithPath: expanded).standardizedFileURL
+    // The `exit` closure is `Void`-returning so tests can capture the
+    // exit code without terminating the test process. In production
+    // the closure is `Darwin.exit(_:)` which truly is `Never`; control
+    // never returns past the first call. We therefore `return`
+    // explicitly after every `exit(...)` so the test path also stops
+    // cleanly (no fall-through into the success branch).
+
+    // Resolve first. fileNotFound (exit 64) and audioDecodeFailed
+    // (exit 65) — including empty-stdin — all originate here.
+    let resolved: ResolvedAudio
+    do {
+        resolved = try await resolver.resolve(source: source)
+    } catch let error as DictamacError {
+        writeStderr(error.formattedStderrLine)
+        exit(error.exitCode)
+        return
+    } catch {
+        let wrapped = DictamacError.internalFailure(error)
+        writeStderr(wrapped.formattedStderrLine)
+        exit(wrapped.exitCode)
+        return
+    }
 
     if verbose {
-        StubMessages.writeStderrLine(
-            "dictamac: transcribing \(url.path) (locale=\(localeIdentifier), json=\(wantsJSON))",
-            to: .standardError
+        let summary: String
+        switch source {
+        case .path:
+            summary = "transcribing \(resolved.url.path)"
+        case .stdin:
+            summary = "transcribing stdin (staged at \(resolved.url.path))"
+        }
+        writeStderr(
+            "dictamac: \(summary) (locale=\(localeIdentifier), json=\(wantsJSON))\n"
         )
     }
 
+    let requestSource: TranscriptionRequest.Source
+    switch source {
+    case .path:
+        requestSource = .file(resolved.url)
+    case .stdin:
+        requestSource = .stdin(resolved.url)
+    }
+
     let request = TranscriptionRequest(
-        source: .file(url),
+        source: requestSource,
         locale: Locale(identifier: localeIdentifier),
         format: wantsJSON ? .json : .text
     )
 
-    let transcriber = DefaultTranscriber()
+    let transcript: Transcript
     do {
-        let transcript = try await transcriber.transcribe(request)
-        writeTranscript(transcript, asJSON: wantsJSON)
-        Darwin.exit(0)
+        transcript = try await transcriber.transcribe(request)
     } catch let error as DictamacError {
-        error.exit()
+        resolved.cleanup()
+        writeStderr(error.formattedStderrLine)
+        exit(error.exitCode)
+        return
     } catch {
-        DictamacError.internalFailure(error).exit()
+        resolved.cleanup()
+        let wrapped = DictamacError.internalFailure(error)
+        writeStderr(wrapped.formattedStderrLine)
+        exit(wrapped.exitCode)
+        return
     }
-}
 
-/// Stdout sink for the rendered transcript. Lives next to the file
-/// handler so the stdout-discipline boundary is in one place — every
-/// other "write something to the user" path in this file targets
-/// stderr.
-private func writeTranscript(_ transcript: Transcript, asJSON: Bool) {
-    let rendered = asJSON
+    // Success path: render, write stdout, clean up the resolver's
+    // staged bytes (no-op for `.path`), exit 0.
+    let rendered = wantsJSON
         ? JSONFormatter.format(transcript)
         : PlaintextFormatter.format(transcript)
-    FileHandle.standardOutput.write(Data(rendered.utf8))
+    writeStdout(rendered)
+    resolved.cleanup()
+    exit(0)
 }
