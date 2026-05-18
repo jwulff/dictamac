@@ -103,15 +103,13 @@ public struct ModeHandlers: Sendable {
                 error.exit()
             },
             mcp: {
-                // Build an empty-handler-registry MCP server bound to
-                // the process's standard handles. The transport
-                // foundation lands here (#18); the actual
-                // `initialize` / `tools/list` / `tools/call` handlers
-                // are added by follow-up issues (#22 / #26) via
-                // `MCPServer.register(method:handler:)`. Until they
-                // land, every method call returns -32601 (Method not
-                // found) — which is enough to verify the loop is
-                // alive end-to-end.
+                // Build an MCP server bound to the process's standard
+                // handles and register the production handler set. The
+                // transport foundation came from #18; this PR (#22)
+                // adds the `initialize` + `tools/list` handlers via
+                // ``ProductionMCPHandlers/register(on:)``. The
+                // `tools/call` dispatch will plug in through the same
+                // entry point in #26.
                 //
                 // The server runs to EOF on stdin; once the loop
                 // returns we exit 0 to match the CLI's success
@@ -119,6 +117,7 @@ public struct ModeHandlers: Sendable {
                 // surfaced as JSON-RPC error responses inside the
                 // loop, never as process-exit failures.
                 let server = MCPServer()
+                await ProductionMCPHandlers.register(on: server)
                 await server.serve()
                 Darwin.exit(0)
             }
