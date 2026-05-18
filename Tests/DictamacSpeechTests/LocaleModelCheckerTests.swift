@@ -195,15 +195,16 @@ struct LocaleModelCheckerTests {
         #expect(received == [Locale(identifier: "en-US")])
     }
 
-    /// File-not-found is decided AFTER bootstrapping the model — by
-    /// design, since `DefaultTranscriber` resolves the URL first and
-    /// only opens the file before invoking the checker. The actual
-    /// existing behavior (verified by `missingFileSurfacesAsFileNotFoundError`
-    /// in `DefaultTranscriberTests`) is that the file open precedes
-    /// the bootstrap call. This test pins that ordering: a missing
-    /// file short-circuits BEFORE the checker is consulted, so the
-    /// mock should record zero invocations even though we constructed
-    /// it with a throw-on-call outcome.
+    /// File-not-found is decided BEFORE the model bootstrap runs — by
+    /// design, since `DefaultTranscriber` resolves the URL and opens
+    /// the audio file first, and only invokes the checker once the
+    /// file open has succeeded. The actual existing behavior (verified
+    /// by `missingFileSurfacesAsFileNotFoundError` in
+    /// `DefaultTranscriberTests`) is that the file open precedes the
+    /// bootstrap call. This test pins that ordering: a missing file
+    /// short-circuits BEFORE the checker is consulted, so the mock
+    /// should record zero invocations even though we constructed it
+    /// with a throw-on-call outcome.
     @Test func fileResolutionPrecedesModelBootstrap() async throws {
         let missingURL = URL(fileURLWithPath: "/tmp/dictamac-locale-checker-test-\(UUID().uuidString).m4a")
         let unexpectedFailure = DictamacError.speechAnalyzerUnavailable(
