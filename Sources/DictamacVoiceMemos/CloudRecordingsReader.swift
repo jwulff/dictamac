@@ -82,8 +82,23 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
 
     private let databaseURL: URL
 
-    public init(databaseURL: URL) {
+    /// Root directory used to resolve relative `ZPATH` values into
+    /// absolute asset paths. Apple stores some Voice Memos with an
+    /// absolute path (`/Users/foo/.../bar.m4a`) and others with a path
+    /// relative to the library's `Recordings/` directory (just
+    /// `bar.m4a`). Without a base URL, `URL(fileURLWithPath:)` would
+    /// resolve the latter against the process working directory, which
+    /// violates ``VoiceMemoMetadata/assetPath``'s absolute-path
+    /// contract and breaks downstream transcription.
+    ///
+    /// Callers obtain this URL from
+    /// ``VoiceMemosLibraryLocator/locate()`` — the same directory that
+    /// contains `CloudRecordings.db` and the `*.m4a` assets.
+    private let libraryURL: URL
+
+    public init(databaseURL: URL, libraryURL: URL) {
         self.databaseURL = databaseURL
+        self.libraryURL = libraryURL
     }
 
     public func recordings() throws -> [VoiceMemoMetadata] {
@@ -178,7 +193,18 @@ public final class DefaultCloudRecordingsReader: CloudRecordingsReader {
             let resolvedTitle = (title?.isEmpty == false) ? (title ?? fallbackTitle) : fallbackTitle
 
             let recordedAt = Date(timeIntervalSinceReferenceDate: date)
-            let assetURL = URL(fileURLWithPath: path)
+            // Apple stores `ZPATH` as either an absolute path
+            // (`/Users/.../bar.m4a`) or a path relative to the library's
+            // `Recordings/` directory (just `bar.m4a`). Absolute paths
+            // pass through unchanged; relative paths are joined onto
+            // `libraryURL` so the resulting `assetPath` always honours
+            // ``VoiceMemoMetadata/assetPath``'s absolute-path contract.
+            let assetURL: URL
+            if path.hasPrefix("/") {
+                assetURL = URL(fileURLWithPath: path)
+            } else {
+                assetURL = libraryURL.appendingPathComponent(path)
+            }
 
             results.append(
                 VoiceMemoMetadata(

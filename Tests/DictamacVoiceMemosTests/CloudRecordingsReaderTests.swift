@@ -177,7 +177,7 @@ import Testing
         ]
         try Self.writeFixtureDatabase(at: dbURL, rows: rows)
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
         let recordings = try reader.recordings()
 
         #expect(recordings.count == 3)
@@ -203,7 +203,7 @@ import Testing
     @Test func missingDatabaseThrowsSqliteUnavailable() throws {
         let dir = try Self.makeFixtureDirectory()
         let dbURL = dir.appendingPathComponent("does-not-exist.db")
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
 
         #expect(throws: CloudRecordingsError.self) {
             try reader.recordings()
@@ -227,7 +227,7 @@ import Testing
         let dbURL = dir.appendingPathComponent("CloudRecordings.db")
         try Self.writeFixtureDatabase(at: dbURL, rows: [])
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
         let recordings = try reader.recordings()
 
         #expect(recordings.isEmpty)
@@ -258,7 +258,7 @@ import Testing
             columnNames: drifted
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
 
         do {
             _ = try reader.recordings()
@@ -290,7 +290,7 @@ import Testing
             tableName: "ZRECORDING" // renamed from ZCLOUDRECORDING
         )
 
-        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL)
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
 
         do {
             _ = try reader.recordings()
@@ -301,6 +301,70 @@ import Testing
                 return
             }
         }
+    }
+
+    // MARK: - ZPATH resolution
+
+    /// Apple stores some `ZPATH` rows as bare filenames relative to the
+    /// `Recordings/` library directory rather than absolute paths. The
+    /// reader must join those onto its injected `libraryURL` so the
+    /// resulting `assetPath` is absolute and points at the right file —
+    /// `URL(fileURLWithPath:)` alone would resolve a relative string
+    /// against the process working directory, which breaks downstream
+    /// transcription. Regression for the Copilot review on PR #48.
+    @Test func relativeZPathIsResolvedAgainstLibraryURL() throws {
+        let dir = try Self.makeFixtureDirectory()
+        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 42,
+                    title: "relative-recording",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1.5,
+                    assetPath: "my-recording.m4a"
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let recordings = try reader.recordings()
+
+        let memo = try #require(recordings.first { $0.identifier == "42" })
+        #expect(memo.assetPath == dir.appendingPathComponent("my-recording.m4a"))
+    }
+
+    /// `ZPATH` values that start with `/` are already absolute and must
+    /// pass through unchanged. Joining them onto `libraryURL` would
+    /// produce a doubled-up nonsense path like
+    /// `<library>/private/tmp/something.m4a`. Regression for the Copilot
+    /// review on PR #48.
+    @Test func absoluteZPathIsReturnedUnchanged() throws {
+        let dir = try Self.makeFixtureDirectory()
+        let dbURL = dir.appendingPathComponent("CloudRecordings.db")
+        let absolutePath = "/tmp/dictamac-synthetic/absolute-recording.m4a"
+        try Self.writeFixtureDatabase(
+            at: dbURL,
+            rows: [
+                FixtureRow(
+                    primaryKey: 7,
+                    title: "absolute-recording",
+                    dateSecondsSinceReference: 100,
+                    durationSeconds: 1.5,
+                    assetPath: absolutePath
+                ),
+            ]
+        )
+
+        let reader = DefaultCloudRecordingsReader(databaseURL: dbURL, libraryURL: dir)
+        let recordings = try reader.recordings()
+
+        let memo = try #require(recordings.first { $0.identifier == "7" })
+        #expect(memo.assetPath == URL(fileURLWithPath: absolutePath))
+        // Negative assertion — guard against the "double-prefix" bug
+        // (joining absolute paths onto libraryURL).
+        #expect(!memo.assetPath.path.contains(dir.path))
     }
 
     // MARK: - Error rendering
