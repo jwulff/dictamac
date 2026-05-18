@@ -209,8 +209,21 @@ public struct MCPToolsCallHandler: Sendable {
             )
             defer { resolved.cleanup() }
 
+            // The request carries the `.voiceMemo` source variant — not
+            // `.file` — so the emitted transcript stamps the memo's
+            // identifier + title into ``Transcript.source`` instead of
+            // the opaque asset URL inside the Voice Memos library.
+            // Without this, `format: "json"` would surface
+            // `source.type == "file"` with the asset path, making a
+            // voice-memo lookup indistinguishable from a raw file
+            // transcription (PR #57 review). The CLI handler mirrors
+            // this exactly so the two transports stay byte-aligned.
             let request = TranscriptionRequest(
-                source: .file(resolved.url),
+                source: .voiceMemo(
+                    identifier: memo.identifier,
+                    title: memo.title,
+                    url: resolved.url
+                ),
                 locale: Locale(identifier: localeIdentifier),
                 format: format
             )

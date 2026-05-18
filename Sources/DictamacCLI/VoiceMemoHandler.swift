@@ -24,9 +24,14 @@ import DictamacVoiceMemos
 ///    ``AudioFileResolver`` so the codec-validation seam
 ///    (`fileNotFound` exit 64 / `audioDecodeFailed` exit 65) is
 ///    identical to the file-path handler.
-/// 5. Builds a ``TranscriptionRequest`` with `.file(resolvedURL)` and
-///    the caller-supplied locale + format. Calls
-///    ``Transcriber/transcribe(_:)``.
+/// 5. Builds a ``TranscriptionRequest`` with
+///    `.voiceMemo(identifier:, title:, url:)` and the caller-supplied
+///    locale + format. Calls ``Transcriber/transcribe(_:)``. The
+///    `.voiceMemo` request source — not `.file` — ensures the emitted
+///    transcript's ``Transcript/source`` carries the memo's identifier
+///    and title rather than the opaque asset path inside the Voice
+///    Memos library (PR #57 review feedback). The MCP path uses the
+///    same variant for byte-identical JSON across transports.
 /// 6. Renders the transcript via ``PlaintextFormatter`` or
 ///    ``JSONFormatter`` and writes to `writeStdout`. The
 ///    ``ResolvedAudio/cleanup()`` hook fires on every exit path
@@ -114,8 +119,20 @@ public func runVoiceMemo(
     // 5. Build the request and transcribe. Cleanup MUST run on every
     //    exit path past this point, so each branch invokes
     //    `resolved.cleanup()` before reporting the error or success.
+    //
+    //    The request carries the `.voiceMemo` source variant — not
+    //    `.file` — so the emitted transcript stamps the memo's
+    //    identifier + title into ``Transcript.source`` instead of the
+    //    opaque asset URL. Without this, `--json --voice-memo` would
+    //    emit `source.type == "file"` with the memo's asset path,
+    //    making it indistinguishable from a raw file transcription
+    //    (PR #57 review). The MCP handler mirrors this exactly.
     let request = TranscriptionRequest(
-        source: .file(resolved.url),
+        source: .voiceMemo(
+            identifier: memo.identifier,
+            title: memo.title,
+            url: resolved.url
+        ),
         locale: Locale(identifier: localeIdentifier),
         format: wantsJSON ? .json : .text
     )

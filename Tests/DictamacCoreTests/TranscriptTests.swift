@@ -301,6 +301,37 @@ struct TranscriptTests {
         #expect(url == temp)
     }
 
+    /// The `.voiceMemo` request source carries the resolved memo's
+    /// identifier + title alongside the on-disk asset URL — added in
+    /// the PR #57 fix so ``DefaultTranscriber`` can stamp the memo
+    /// metadata into ``Transcript.source`` rather than collapsing to
+    /// `.file(path: assetURL.path)` (which would leak the opaque asset
+    /// path into JSON consumers).
+    @Test func requestSourceCanCarryVoiceMemoMetadata() {
+        let url = URL(fileURLWithPath: "/Users/test/voice-memos/42.m4a")
+        let request = TranscriptionRequest(
+            source: .voiceMemo(identifier: "VM-42", title: "Yesterday's standup", url: url),
+            locale: Locale(identifier: "en-US"),
+            format: .json
+        )
+        guard case .voiceMemo(let identifier, let title, let assetURL) = request.source else {
+            Issue.record("expected .voiceMemo case")
+            return
+        }
+        #expect(identifier == "VM-42")
+        #expect(title == "Yesterday's standup")
+        #expect(assetURL == url)
+    }
+
+    @Test func requestSourceVoiceMemoEqualityIsStructural() {
+        let url = URL(fileURLWithPath: "/Users/test/voice-memos/42.m4a")
+        let a = TranscriptionRequest.Source.voiceMemo(identifier: "id", title: "title", url: url)
+        let b = TranscriptionRequest.Source.voiceMemo(identifier: "id", title: "title", url: url)
+        let c = TranscriptionRequest.Source.voiceMemo(identifier: "other", title: "title", url: url)
+        #expect(a == b)
+        #expect(a != c)
+    }
+
     // MARK: - Helpers
 
     private func simpleTranscript() -> Transcript {

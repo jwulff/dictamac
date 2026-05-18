@@ -155,6 +155,14 @@ public final class DefaultTranscriber: Transcriber {
             // way; only the emitted ``TranscriptSource`` differs (see
             // ``transcriptSource(for:audioURL:)``).
             return url
+        case .voiceMemo(_, _, let url):
+            // The CLI / MCP voice-memo handlers run the memo's
+            // `assetPath` through `AudioFileResolver` first, so the
+            // URL here has already been validated. Read it the same
+            // way as a regular file; the identifier + title hitch a
+            // ride into the emitted ``TranscriptSource`` via
+            // ``transcriptSource(for:audioURL:)``.
+            return url
         }
     }
 
@@ -164,18 +172,33 @@ public final class DefaultTranscriber: Transcriber {
     /// layers:
     ///
     /// - ``TranscriptionRequest.Source`` is the *internal* descriptor of
-    ///   where the bytes live on disk right now. Both `.file` and
-    ///   `.stdin` carry a URL; the transcriber treats them identically.
+    ///   where the bytes live on disk right now. `.file`, `.stdin`, and
+    ///   `.voiceMemo` all carry a URL; the transcriber reads from each
+    ///   URL identically.
     /// - ``TranscriptSource`` is the *external* descriptor stamped into
-    ///   the JSON schema (PLAN.md §6). For `.file` the path is a stable,
-    ///   user-meaningful reference. For `.stdin` the path is a temp file
-    ///   the CLI deletes immediately after transcription, so we MUST NOT
-    ///   leak it into the JSON output — `.stdin` is encoded as
-    ///   `{"type": "stdin"}` with no path. This is exactly the bug PR #43
-    ///   addresses: previously both variants collapsed to
-    ///   `.file(path: audioURL.path)`, leaving JSON consumers with a
-    ///   dangling `/tmp/dictamac-stdin-...m4a` path they could neither
-    ///   read nor distinguish from a real file.
+    ///   the JSON schema (PLAN.md §6). The mapping is:
+    ///   - `.file(url)` → `.file(path: url.path)` (user-meaningful path)
+    ///   - `.stdin` → `.stdin` (no path — see below)
+    ///   - `.voiceMemo(id, title, _)` → `.voiceMemo(identifier: id, title: title)`
+    ///     (the resolved memo's identifier + title — see below)
+    ///
+    /// **`.stdin`**: the URL is a temp file the CLI deletes immediately
+    /// after transcription, so we MUST NOT leak it into the JSON output
+    /// — `.stdin` is encoded as `{"type": "stdin"}` with no path. This
+    /// is exactly the bug PR #43 addresses: previously both variants
+    /// collapsed to `.file(path: audioURL.path)`, leaving JSON consumers
+    /// with a dangling `/tmp/dictamac-stdin-...m4a` path they could
+    /// neither read nor distinguish from a real file.
+    ///
+    /// **`.voiceMemo`**: the URL points at the memo's asset inside the
+    /// Voice Memos library — typically an opaque `<UUID>.m4a` whose
+    /// path is meaningless to a human consumer. The identifier + title
+    /// are the user-meaningful reference, so we stamp those into the
+    /// JSON instead of the asset path. This is the parallel fix to
+    /// PR #43 for the voice-memo path (PR #57 review feedback): without
+    /// it, `dictamac --json --voice-memo "yesterday"` would emit
+    /// `source.type == "file"` with the asset path, losing the fact
+    /// that the user invoked a Voice Memos query.
     ///
     /// Internal (not `private`) so unit tests in the same module can
     /// assert the mapping without spinning up ``SpeechAnalyzer``. The
@@ -190,6 +213,8 @@ public final class DefaultTranscriber: Transcriber {
             return .file(path: audioURL.path)
         case .stdin:
             return .stdin
+        case .voiceMemo(let identifier, let title, _):
+            return .voiceMemo(identifier: identifier, title: title)
         }
     }
 

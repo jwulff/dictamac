@@ -420,14 +420,19 @@ struct ToolsCallTests {
         let sources = await audioResolver.receivedSources
         #expect(sources == [.path(memo.assetPath.path)])
 
-        // The transcriber received the resolved file URL and default
-        // locale/format.
+        // The transcriber received the resolved file URL inside the
+        // `.voiceMemo` source variant carrying the memo's identifier
+        // and title (PR #57 review: without this, the emitted
+        // transcript would carry `.file(assetPath)` and JSON consumers
+        // couldn't tell a Voice Memos lookup from a raw file lookup).
         let requests = await transcriber.receivedRequests
         #expect(requests.count == 1)
-        guard case .file(let url) = requests.first?.source else {
-            Issue.record("transcriber received non-.file source")
+        guard case .voiceMemo(let identifier, let title, let url) = requests.first?.source else {
+            Issue.record("transcriber received non-.voiceMemo source")
             return
         }
+        #expect(identifier == memo.identifier)
+        #expect(title == memo.title)
         #expect(url.path == memo.assetPath.path)
         #expect(requests.first?.format == .text)
         #expect(requests.first?.locale.identifier == "en-US")
@@ -460,6 +465,71 @@ struct ToolsCallTests {
         #expect(text.contains("\"version\""))
         #expect(text.contains("\"fullText\""))
         #expect(text.contains("\"segments\""))
+    }
+
+    /// Regression for the PR #57 review thread: when the MCP path is
+    /// taken with `format: "json"`, the emitted transcript's `source`
+    /// MUST carry the memo's identifier and title — not the opaque
+    /// asset path. Mirrors the CLI test
+    /// ``VoiceMemoHandlerTests/jsonPathEmitsVoiceMemoSourceWithIdentifierAndTitle``
+    /// so the two transports stay byte-aligned on the JSON shape.
+    @Test func transcribeVoiceMemoJSONSourceCarriesMemoMetadata() async throws {
+        let memo = VoiceMemoMetadataFixture.canned(
+            identifier: "VM-42",
+            title: "Yesterday's standup",
+            assetPath: URL(fileURLWithPath: "/Users/test/Library/voice-memos/42.m4a")
+        )
+        let vmResolver = MockVoiceMemosResolver(resolveResult: memo)
+        // The transcript the production transcriber would emit for a
+        // `.voiceMemo` request source — assert the source shape on the
+        // wire here so a future regression that collapses to `.file`
+        // would fail with a clear diff.
+        let transcript = Transcript(
+            segments: [
+                TranscriptSegment(
+                    startSeconds: 0,
+                    endSeconds: 1,
+                    text: "voice memo body",
+                    confidence: nil
+                )
+            ],
+            locale: "en-US",
+            durationSeconds: 1,
+            model: "MockTranscriber",
+            source: .voiceMemo(identifier: memo.identifier, title: memo.title)
+        )
+        let (handler, _, _, _) = makeHandler(
+            transcript: transcript,
+            resolvedURL: memo.assetPath,
+            voiceMemosResolver: vmResolver
+        )
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("transcribe_voice_memo"),
+            "arguments": .object([
+                "query": .string("yesterday"),
+                "format": .string("json"),
+            ]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result),
+              let text = envelope.texts.first else {
+            Issue.record("envelope missing or wrong shape: \(result)")
+            return
+        }
+        #expect(envelope.isError == false)
+
+        // Parse the JSON instead of substring-matching so a future
+        // tweak to formatting doesn't silently mask a regression.
+        let data = try #require(text.data(using: .utf8))
+        let object = try JSONSerialization.jsonObject(with: data)
+        let dict = try #require(object as? [String: Any])
+        let source = try #require(dict["source"] as? [String: Any])
+
+        #expect(source["type"] as? String == "voice-memo")
+        #expect(source["identifier"] as? String == memo.identifier)
+        #expect(source["title"] as? String == memo.title)
+        #expect(source["path"] == nil, "voice-memo source must NOT leak the asset path (PR #57)")
     }
 
     @Test func transcribeVoiceMemoForwardsLocaleArgument() async throws {

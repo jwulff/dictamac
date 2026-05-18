@@ -48,14 +48,22 @@ struct VoiceMemoHandlerTests {
         let audioSources = await audioResolver.receivedSources
         #expect(audioSources == [.path(memo.assetPath.path)])
 
-        // The transcriber received the resolved URL with `.file` source
-        // (parity with the MCP `transcribe_voice_memo` envelope).
+        // The transcriber received the resolved URL with the
+        // `.voiceMemo` source variant carrying the memo's identifier
+        // and title (parity with the MCP `transcribe_voice_memo`
+        // envelope, and the architectural fix from PR #57 review:
+        // without this, the emitted transcript's source would collapse
+        // to `.file(path: assetURL.path)` and `--json --voice-memo`
+        // would leak the opaque asset path instead of the memo
+        // metadata).
         let requests = await transcriber.receivedRequests
         #expect(requests.count == 1)
-        if case .file(let url) = requests.first?.source {
+        if case .voiceMemo(let identifier, let title, let url) = requests.first?.source {
+            #expect(identifier == memo.identifier)
+            #expect(title == memo.title)
             #expect(url == resolvedURL)
         } else {
-            Issue.record("expected request.source == .file(resolvedURL); got \(String(describing: requests.first?.source))")
+            Issue.record("expected request.source == .voiceMemo(...); got \(String(describing: requests.first?.source))")
         }
         #expect(requests.first?.format == .text)
         #expect(requests.first?.locale.identifier == "en-US")
@@ -93,6 +101,63 @@ struct VoiceMemoHandlerTests {
         let stdout = recorder.stdoutText
         #expect(stdout.contains("\"version\""), "JSON output must contain the schema version key")
         #expect(stdout.contains("json transcript"))
+
+        let exitCodes = recorder.exitCodes
+        #expect(exitCodes == [0])
+    }
+
+    /// Regression for the PR #57 review thread: when the JSON path is
+    /// taken, the emitted transcript's `source` MUST carry the memo's
+    /// identifier and title — not the opaque asset path. Before the
+    /// fix, `DefaultTranscriber` collapsed the request source to
+    /// `.file(path: assetURL.path)` and JSON consumers couldn't tell a
+    /// Voice Memos lookup from a raw file transcription. The MCP path
+    /// has the same regression test in
+    /// ``ToolsCallTests/transcribeVoiceMemoJSONSourceCarriesMemoMetadata``.
+    @Test func jsonPathEmitsVoiceMemoSourceWithIdentifierAndTitle() async throws {
+        let now = Date(timeIntervalSince1970: 1_715_000_000)
+        let memo = canonicalMemo(now: now)
+        let resolver = MockVoiceMemosResolver(listings: [memo])
+        let audioResolver = MockAudioFileResolver(resolvedURL: memo.assetPath)
+
+        // The transcript the mock returns is built by feeding the same
+        // request source through ``DefaultTranscriber/transcriptSource(for:audioURL:)``.
+        // This way the test exercises the full pipeline contract: the
+        // CLI handler builds a `.voiceMemo` request source, the
+        // transcriber maps it to a `.voiceMemo` transcript source, and
+        // the JSON formatter encodes that as `{"type": "voice-memo",
+        // "identifier": ..., "title": ...}`.
+        let resolvedURL = memo.assetPath
+        let transcriber = TranscriptSourceEchoingTranscriber(
+            memoIdentifier: memo.identifier,
+            memoTitle: memo.title,
+            resolvedURL: resolvedURL
+        )
+        let recorder = OutputRecorder()
+
+        await runVoiceMemoForTest(
+            query: "yesterday",
+            voiceMemosResolver: resolver,
+            transcriber: transcriber,
+            audioResolver: audioResolver,
+            wantsJSON: true,
+            now: now,
+            recorder: recorder
+        )
+
+        let stdout = recorder.stdoutText
+        // Parse the JSON instead of substring-matching so a future
+        // tweak to formatting (e.g. trailing whitespace, key order)
+        // doesn't silently mask a regression.
+        let data = try #require(stdout.data(using: .utf8))
+        let object = try JSONSerialization.jsonObject(with: data)
+        let dict = try #require(object as? [String: Any])
+        let source = try #require(dict["source"] as? [String: Any])
+
+        #expect(source["type"] as? String == "voice-memo")
+        #expect(source["identifier"] as? String == memo.identifier)
+        #expect(source["title"] as? String == memo.title)
+        #expect(source["path"] == nil, "voice-memo source must NOT leak the asset path (PR #57)")
 
         let exitCodes = recorder.exitCodes
         #expect(exitCodes == [0])
@@ -459,6 +524,54 @@ struct VoiceMemoHandlerTests {
             writeStdout: { recorder.appendStdout($0) },
             writeStderr: { recorder.appendStderr($0) },
             exit: { recorder.recordExit($0) }
+        )
+    }
+}
+
+/// Test transcriber that builds its returned ``Transcript`` to match
+/// what ``DefaultTranscriber`` would emit for the incoming request —
+/// specifically, when the request carries a `.voiceMemo` source the
+/// emitted transcript carries a `.voiceMemo` ``TranscriptSource`` with
+/// the same identifier + title.
+///
+/// Used by ``VoiceMemoHandlerTests/jsonPathEmitsVoiceMemoSourceWithIdentifierAndTitle``
+/// to exercise the end-to-end JSON shape without spinning up
+/// ``SpeechAnalyzer``. The plain ``MockTranscriber`` returns a fixed
+/// transcript with a `.file` source, which would mask the regression
+/// this test guards against.
+private actor TranscriptSourceEchoingTranscriber: Transcriber {
+    let memoIdentifier: String
+    let memoTitle: String
+    let resolvedURL: URL
+
+    init(memoIdentifier: String, memoTitle: String, resolvedURL: URL) {
+        self.memoIdentifier = memoIdentifier
+        self.memoTitle = memoTitle
+        self.resolvedURL = resolvedURL
+    }
+
+    func transcribe(_ request: TranscriptionRequest) async throws -> Transcript {
+        // Sanity check: the handler must have built a `.voiceMemo`
+        // request source carrying our identifier + title. If a future
+        // refactor reverts to `.file`, the JSON-shape assertion in the
+        // caller is the primary check; this guard surfaces the
+        // upstream regression with a clearer message.
+        guard case .voiceMemo(let identifier, let title, _) = request.source else {
+            return TranscriptFixture.canned()
+        }
+        return Transcript(
+            segments: [
+                TranscriptSegment(
+                    startSeconds: 0,
+                    endSeconds: 1,
+                    text: "voice memo body",
+                    confidence: nil
+                )
+            ],
+            locale: "en-US",
+            durationSeconds: 1,
+            model: "MockTranscriber",
+            source: .voiceMemo(identifier: identifier, title: title)
         )
     }
 }
