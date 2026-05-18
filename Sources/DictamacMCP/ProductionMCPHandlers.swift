@@ -1,5 +1,6 @@
 import Foundation
 import DictamacCore
+import DictamacVoiceMemos
 
 /// Production MCP method handlers.
 ///
@@ -36,18 +37,21 @@ public enum ProductionMCPHandlers {
     }
 
     /// Register every production handler — including `tools/call` —
-    /// on the given ``MCPServer``. The `tools/call` handler is bound
-    /// to the supplied ``Transcriber`` + ``AudioFileResolver`` so the
-    /// same dispatch path can be exercised end-to-end from tests.
+    /// on the given ``MCPServer``. The `tools/call` handler is bound to
+    /// the supplied ``Transcriber``, ``AudioFileResolver``, and
+    /// ``VoiceMemosResolver`` so the same dispatch path can be
+    /// exercised end-to-end from tests.
     public static func register(
         on server: MCPServer,
         transcriber: any Transcriber,
-        audioResolver: any AudioFileResolver
+        audioResolver: any AudioFileResolver,
+        voiceMemosResolver: any VoiceMemosResolver
     ) async {
         await register(on: server)
         let toolsCall = MCPToolsCallHandler(
             transcriber: transcriber,
-            audioResolver: audioResolver
+            audioResolver: audioResolver,
+            voiceMemosResolver: voiceMemosResolver
         )
         await server.register(method: "tools/call") { params in
             try await toolsCall.handle(params: params)

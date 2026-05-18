@@ -43,7 +43,7 @@ let package = Package(
         ),
         .target(
             name: "DictamacMCP",
-            dependencies: ["DictamacCore"]
+            dependencies: ["DictamacCore", "DictamacVoiceMemos"]
         ),
         .target(
             name: "DictamacCLI",
@@ -68,7 +68,7 @@ let package = Package(
         ),
         .testTarget(
             name: "DictamacMCPTests",
-            dependencies: ["DictamacMCP", "DictamacCore"],
+            dependencies: ["DictamacMCP", "DictamacCore", "DictamacVoiceMemos"],
             resources: [
                 // `__Snapshots__/tools-list.json` is the golden shape
                 // for the MCP `tools/list` response. It's loaded via
