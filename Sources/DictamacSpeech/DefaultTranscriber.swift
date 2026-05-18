@@ -52,12 +52,42 @@ public final class DefaultTranscriber: Transcriber {
     /// the exact value without re-typing the literal.
     public static let modelIdentifier = "SpeechAnalyzer/macOS26"
 
-    public init() {}
+    /// Pre-flight bootstrap that guarantees the on-device speech model
+    /// is installed and reserved before `SpeechAnalyzer` runs. Replaces
+    /// the inline private static `ensureLocaleModelAvailable` that
+    /// landed with PR #40; see `LocaleModelChecker.swift` for the
+    /// rationale.
+    private let localeModelChecker: any LocaleModelChecker
+
+    /// Where the locale-model bootstrap writes its progress lines. In
+    /// production this is stderr (per stdout discipline); tests inject
+    /// a capture sink. Defaults to ``LocaleModelProgressSink/standardError``
+    /// so the common CLI path is one short call.
+    private let progressSink: LocaleModelProgressSink
+
+    public init(
+        localeModelChecker: any LocaleModelChecker = SpeechAPILocaleModelChecker(),
+        progressSink: LocaleModelProgressSink = .standardError
+    ) {
+        self.localeModelChecker = localeModelChecker
+        self.progressSink = progressSink
+    }
 
     public func transcribe(_ request: TranscriptionRequest) async throws -> Transcript {
         let audioURL = try Self.url(from: request.source)
         let audioFile = try Self.openAudioFile(at: audioURL)
         let locale = request.locale
+
+        // Bootstrap the on-device speech model BEFORE constructing the
+        // analyzer. The injected `LocaleModelChecker` handles install
+        // status, multi-second download progress reporting (to stderr),
+        // the `AssetInventory.reserve(locale:)` step that the framework
+        // requires (without it `analyzeSequence` hangs forever — see
+        // `LocaleModelChecker.swift`), and exit-code-67 failure mapping.
+        try await localeModelChecker.ensureModelAvailable(
+            for: locale,
+            progress: progressSink
+        )
 
         let speechTranscriber = SpeechTranscriber(
             locale: locale,
@@ -65,26 +95,6 @@ public final class DefaultTranscriber: Transcriber {
             reportingOptions: [],
             attributeOptions: [.audioTimeRange]
         )
-
-        // The Speech framework requires the locale model to be both
-        // (a) installed on the host and (b) "reserved" by this process
-        // before the analyzer can use it. Without either step, the
-        // analyzer hangs forever — the framework writes a
-        // "Cannot use modules with unallocated locales" error to the
-        // unified log but never throws, so the symptom is a silent hang.
-        //
-        // Locale-model bootstrap proper (download progress reporting,
-        // offline-failure exit code 67, etc.) lives in #15. Here we do
-        // the minimum the analyzer needs to make progress:
-        //
-        //   1. If the model is `.supported` (or `.downloading`),
-        //      kick off `downloadAndInstall()` synchronously. This may
-        //      take seconds the first time; subsequent runs are
-        //      immediate because the model is cached on disk.
-        //   2. Reserve the locale so this process is allocated a
-        //      slot in the inventory. Released when the analyzer
-        //      tears down (or the process exits).
-        try await Self.ensureLocaleModelAvailable(for: speechTranscriber, locale: locale)
 
         let analyzer = SpeechAnalyzer(modules: [speechTranscriber])
 
@@ -155,48 +165,6 @@ public final class DefaultTranscriber: Transcriber {
         } catch {
             throw DictamacError.audioDecodeFailed(url, underlying: error)
         }
-    }
-
-    // MARK: - Locale model availability
-
-    /// Minimum locale-model bootstrap the analyzer needs to make
-    /// progress. Full progress reporting and the offline-failure exit
-    /// code 67 path lands under issue #15.
-    private static func ensureLocaleModelAvailable(
-        for transcriber: SpeechTranscriber,
-        locale: Locale
-    ) async throws {
-        let status = await AssetInventory.status(forModules: [transcriber])
-        switch status {
-        case .installed:
-            break
-        case .supported, .downloading:
-            if let installRequest = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                try await installRequest.downloadAndInstall()
-            }
-        case .unsupported:
-            // The host doesn't ship a model for this locale. Surface as
-            // `speechAnalyzerUnavailable` (exit code 67, PLAN.md §4) so
-            // callers can react correctly — this is a model-availability
-            // failure, not an audio-decode failure (exit 65), and the
-            // file URL is irrelevant to the diagnosis.
-            throw DictamacError.speechAnalyzerUnavailable(
-                reason: "Locale \(locale.identifier) is not supported on this device"
-            )
-        @unknown default:
-            // A future Status case appears — treat conservatively as
-            // unavailable rather than blocking on an unknown state.
-            // Same exit-code-67 mapping as the `.unsupported` arm.
-            throw DictamacError.speechAnalyzerUnavailable(
-                reason: "Unknown locale model installation status for \(locale.identifier)"
-            )
-        }
-
-        // Reserving is idempotent for already-reserved locales; do it
-        // unconditionally so a process that previously released the
-        // reservation re-acquires it cleanly. `try` because reserve can
-        // fail when the per-process cap is exceeded.
-        _ = try await AssetInventory.reserve(locale: locale)
     }
 
     // MARK: - Analyzer lifecycle on @MainActor
