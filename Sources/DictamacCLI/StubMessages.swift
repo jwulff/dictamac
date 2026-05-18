@@ -11,12 +11,6 @@ import Foundation
 /// real behavior and these constants disappear.
 public enum StubMessages {
 
-    /// Voice Memos epic. The query is preserved verbatim so an agent
-    /// that just got "not implemented" still sees what it asked for.
-    public static func voiceMemoNotImplemented(query: String) -> String {
-        "--voice-memo \"\(query)\" not yet implemented — see epic #4."
-    }
-
     /// MCP transport epic.
     public static let mcpNotImplemented =
         "--mcp stdio server not yet implemented — see epic #5."

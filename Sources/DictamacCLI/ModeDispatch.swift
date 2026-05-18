@@ -100,10 +100,23 @@ public struct ModeHandlers: Sendable {
                 )
             },
             voiceMemo: { query in
-                let error = DictamacError.argumentError(
-                    StubMessages.voiceMemoNotImplemented(query: query)
+                // Real handler — see `VoiceMemoHandler.swift`.
+                // Mirrors the MCP `transcribe_voice_memo` tool wired in
+                // #54: parse the query through ``VoiceMemoQuery.parse``,
+                // resolve via the shared ``VoiceMemosResolver``, then
+                // hand the memo's `assetPath` through the same audio
+                // resolver + transcriber the file/stdin handlers use.
+                // The two transports are deliberately thin shells over
+                // the same core (PLAN.md §5 / §7 U9).
+                let voiceMemosResolver = voiceMemosResolverFactory()
+                await runVoiceMemo(
+                    query: query,
+                    voiceMemosResolver: voiceMemosResolver,
+                    transcriber: transcriber,
+                    audioResolver: resolver,
+                    localeIdentifier: locale,
+                    wantsJSON: wantsJSON
                 )
-                error.exit()
             },
             listVoiceMemos: { since, limit in
                 // Real handler — see `ListVoiceMemosHandler.swift`.
