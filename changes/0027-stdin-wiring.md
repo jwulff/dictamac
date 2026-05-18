@@ -91,7 +91,7 @@ just wires the resolved `.stdin` mode through to actual work.
 
 ## Test surface
 
-- `Tests/DictamacCLITests/ResolverWiringTests.swift` — 11 new tests
+- `Tests/DictamacCLITests/ResolverWiringTests.swift` — 9 new tests
   pinning the resolver-first dispatch invariants (file path goes
   through resolver, stdin goes through resolver, fileNotFound maps to
   64, empty stdin maps to 65, decode failure maps to 65, cleanup runs
