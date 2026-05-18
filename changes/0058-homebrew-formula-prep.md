@@ -1,6 +1,6 @@
 # Prep Homebrew formula: PREFIX support, README, sample
 
-PR: #59
+PR: #58
 Issues: Refs #9
 
 ## What changed
