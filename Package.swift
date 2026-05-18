@@ -68,7 +68,15 @@ let package = Package(
         ),
         .testTarget(
             name: "DictamacMCPTests",
-            dependencies: ["DictamacMCP", "DictamacCore"]
+            dependencies: ["DictamacMCP", "DictamacCore"],
+            resources: [
+                // `__Snapshots__/tools-list.json` is the golden shape
+                // for the MCP `tools/list` response. It's loaded via
+                // `Bundle.module` from the snapshot drift test and is
+                // the only thing that needs to ride along with the
+                // test binary today.
+                .copy("__Snapshots__"),
+            ]
         ),
         .testTarget(
             name: "DictamacCLITests",

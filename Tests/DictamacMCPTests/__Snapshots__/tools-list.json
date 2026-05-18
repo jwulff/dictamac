@@ -1,0 +1,68 @@
+{
+  "tools": [
+    {
+      "name": "transcribe_file",
+      "description": "Transcribe an audio file via Apple's on-device SpeechAnalyzer. Returns plaintext by default, or a structured transcript with timestamps when format=\"json\".",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the audio file."
+          },
+          "locale": {
+            "type": "string",
+            "description": "BCP-47 locale (e.g. en-US). Defaults to system locale."
+          },
+          "format": {
+            "type": "string",
+            "enum": ["text", "json"],
+            "default": "text"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "transcribe_voice_memo",
+      "description": "Find a Voice Memo by title or date and transcribe it. The Voice Memos app does not always auto-transcribe; this tool transcribes on demand.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Substring match against Voice Memo titles, or time anchor (today, yesterday, this morning), or ISO date (YYYY-MM-DD), or an identifier from list_voice_memos."
+          },
+          "locale": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["text", "json"],
+            "default": "text"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "list_voice_memos",
+      "description": "List Voice Memos in reverse chronological order with their titles, recording dates, and durations.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string",
+            "description": "Duration string (7d, 2w, 1m) or ISO date. Default: 30d."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          }
+        }
+      }
+    }
+  ]
+}
