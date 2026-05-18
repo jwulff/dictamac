@@ -62,6 +62,29 @@ import Testing
             )
         }
 
+        /// Creates a regular file (not a directory) at the Group
+        /// Containers candidate path. Used to exercise the locator's
+        /// "is it actually a directory?" guard — a stray file at the
+        /// candidate path should be treated as missing, not as a
+        /// TCC-denied directory.
+        func createGroupContainersAsFile() throws {
+            try FileManager.default.createDirectory(
+                at: groupContainersPath.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data().write(to: groupContainersPath)
+        }
+
+        /// Symmetric helper: regular file at the fallback candidate
+        /// path. Exercises the same guard on the second probe.
+        func createApplicationSupportAsFile() throws {
+            try FileManager.default.createDirectory(
+                at: applicationSupportPath.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data().write(to: applicationSupportPath)
+        }
+
         func tearDown() {
             // Restore readable permissions before removing in case a
             // test simulated TCC denial via chmod 000.
@@ -234,6 +257,73 @@ import Testing
             }
             #expect(domain == "Files & Folders")
             #expect(deepLink?.absoluteString.contains("Privacy_FilesAndFolders") == true)
+        }
+    }
+
+    // MARK: - regular file at candidate path → voiceMemoLibraryMissing
+    //
+    // Regression for Copilot review thread on PR #45: a non-directory
+    // item sitting at a candidate path used to be mis-classified as a
+    // TCC-denied directory (readability probe failed → permissionDenied).
+    // The locator now guards the existence check with isDirectory==true
+    // so the offending path is treated as missing and probing continues.
+
+    @Test
+    func regularFileAtGroupContainersPathTreatedAsMissing() throws {
+        let fixture = try Self.makeFixtureHome()
+        defer { fixture.tearDown() }
+        // Plant a regular file (not a directory) at the Group Containers
+        // path; leave the fallback path absent. Expectation: the
+        // locator skips the file, finds nothing at the fallback, and
+        // throws .voiceMemoLibraryMissing — NOT .permissionDenied.
+        try fixture.createGroupContainersAsFile()
+
+        let locator = DefaultVoiceMemosLibraryLocator(
+            homeProvider: { fixture.home }
+        )
+
+        do {
+            _ = try locator.locate()
+            Issue.record("Expected DictamacError.voiceMemoLibraryMissing")
+        } catch let error as DictamacError {
+            guard case .voiceMemoLibraryMissing(let searched) = error else {
+                Issue.record("Expected .voiceMemoLibraryMissing, got \(error)")
+                return
+            }
+            #expect(searched == [
+                fixture.groupContainersPath,
+                fixture.applicationSupportPath,
+            ])
+            #expect(error.exitCode == 74)
+        }
+    }
+
+    @Test
+    func regularFileAtFallbackPathTreatedAsMissing() throws {
+        let fixture = try Self.makeFixtureHome()
+        defer { fixture.tearDown() }
+        // Symmetric case: Group Containers absent, fallback path
+        // occupied by a regular file. Same expectation — neither
+        // candidate yields a directory, so .voiceMemoLibraryMissing.
+        try fixture.createApplicationSupportAsFile()
+
+        let locator = DefaultVoiceMemosLibraryLocator(
+            homeProvider: { fixture.home }
+        )
+
+        do {
+            _ = try locator.locate()
+            Issue.record("Expected DictamacError.voiceMemoLibraryMissing")
+        } catch let error as DictamacError {
+            guard case .voiceMemoLibraryMissing(let searched) = error else {
+                Issue.record("Expected .voiceMemoLibraryMissing, got \(error)")
+                return
+            }
+            #expect(searched == [
+                fixture.groupContainersPath,
+                fixture.applicationSupportPath,
+            ])
+            #expect(error.exitCode == 74)
         }
     }
 

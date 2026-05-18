@@ -93,7 +93,18 @@ public struct DefaultVoiceMemosLibraryLocator: VoiceMemosLibraryLocator {
         let fileManager = FileManager.default
 
         for candidate in candidates {
-            guard fileManager.fileExists(atPath: candidate.path) else {
+            // A non-directory item (regular file, symlink to a file,
+            // device node) at the candidate path is treated as missing
+            // — there is no library here, so probe the next candidate.
+            // Without this check, the downstream readability probe
+            // would mis-classify a stray file as TCC-denied and throw
+            // `.permissionDenied`, which is misleading.
+            var isDirectory: ObjCBool = false
+            let exists = fileManager.fileExists(
+                atPath: candidate.path,
+                isDirectory: &isDirectory
+            )
+            guard exists, isDirectory.boolValue else {
                 continue
             }
             // The directory exists. Confirm we can actually read it
