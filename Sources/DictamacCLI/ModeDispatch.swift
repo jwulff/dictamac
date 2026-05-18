@@ -2,6 +2,7 @@ import Foundation
 import DictamacCore
 import DictamacMCP
 import DictamacSpeech
+import DictamacVoiceMemos
 
 /// Per-mode async handlers, injected at the dispatch seam so tests can
 /// assert which mode the parser resolved without standing up the real
@@ -55,7 +56,20 @@ public struct ModeHandlers: Sendable {
     public static func production(
         locale: String,
         wantsJSON: Bool,
-        verbose: Bool
+        verbose: Bool,
+        voiceMemosResolverFactory: @Sendable @escaping () -> (any VoiceMemosResolver)
+            = {
+                DefaultVoiceMemosResolver(
+                    locator: DefaultVoiceMemosLibraryLocator(),
+                    sqliteReaderFactory: { databaseURL, libraryURL in
+                        DefaultCloudRecordingsReader(
+                            databaseURL: databaseURL,
+                            libraryURL: libraryURL
+                        )
+                    },
+                    filesystemScanner: DefaultFilesystemRecordingsScanner()
+                )
+            }
     ) -> ModeHandlers {
         // One resolver + one transcriber shared across the file and
         // stdin handlers — both intakes flow through the same seam
@@ -91,16 +105,22 @@ public struct ModeHandlers: Sendable {
                 )
                 error.exit()
             },
-            listVoiceMemos: { _, _ in
-                // `since` / `limit` are accepted into the signature so
-                // the dispatch seam matches the real handler shape that
-                // ships with epic #4. The stub itself doesn't have
-                // anything to filter yet, so it drops the payload and
-                // reports the same "not yet implemented" message.
-                let error = DictamacError.argumentError(
-                    StubMessages.listVoiceMemosNotImplemented
+            listVoiceMemos: { since, limit in
+                // Real handler — see `ListVoiceMemosHandler.swift`.
+                // The voice-memos resolver is supplied via the factory
+                // closure so a test override can swap the implementation
+                // without touching this dispatch site. The default
+                // factory constructs a `DefaultVoiceMemosResolver` wiring
+                // the library locator, CloudRecordings SQLite reader,
+                // and filesystem scanner together.
+                let voiceMemosResolver = voiceMemosResolverFactory()
+                await runListVoiceMemos(
+                    since: since,
+                    limit: limit,
+                    resolver: voiceMemosResolver,
+                    now: Date(),
+                    wantsJSON: wantsJSON
                 )
-                error.exit()
             },
             mcp: {
                 // Build an MCP server bound to the process's standard
