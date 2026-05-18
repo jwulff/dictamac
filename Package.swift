@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "dictamac", targets: ["dictamac"]),
         .library(name: "DictamacCore", targets: ["DictamacCore"]),
         .library(name: "DictamacSpeech", targets: ["DictamacSpeech"]),
+        .library(name: "DictamacCLI", targets: ["DictamacCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
@@ -18,6 +19,7 @@ let package = Package(
         .executableTarget(
             name: "dictamac",
             dependencies: [
+                "DictamacCLI",
                 "DictamacCore",
                 "DictamacSpeech",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -30,6 +32,14 @@ let package = Package(
             name: "DictamacSpeech",
             dependencies: ["DictamacCore"]
         ),
+        .target(
+            name: "DictamacCLI",
+            dependencies: [
+                "DictamacCore",
+                "DictamacSpeech",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
         .testTarget(
             name: "DictamacCoreTests",
             dependencies: ["DictamacCore"]
@@ -39,6 +49,14 @@ let package = Package(
             dependencies: ["DictamacSpeech", "DictamacCore"],
             resources: [
                 .copy("Fixtures"),
+            ]
+        ),
+        .testTarget(
+            name: "DictamacCLITests",
+            dependencies: [
+                "DictamacCLI",
+                "DictamacCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
     ]
