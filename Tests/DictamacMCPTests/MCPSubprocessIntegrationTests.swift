@@ -35,6 +35,13 @@ import Testing
 /// /entitlement requirements, and stdout/stderr discipline that the
 /// in-process tests cannot catch.
 ///
+/// The pipe-draining side of the same regression is handled inline by
+/// ``drainPipeToEnd(_:)``, which uses posix `Darwin.read(_:_:_:)` on
+/// the underlying file descriptor rather than
+/// `FileHandle.readDataToEndOfFile()` (which shares the same blocking
+/// codepath). See the doc comment on that helper for the EINTR retry
+/// rationale.
+///
 /// ## Skip semantics
 ///
 /// The test self-skips (records a Swift Testing `Issue` and returns
@@ -229,8 +236,8 @@ struct MCPSubprocessIntegrationTests {
         }
 
         // ── Drain pipes after exit ──────────────────────────────────
-        // Use posix `read(2)` on the underlying fd — see the
-        // ``StreamingLineReader`` docs for why we don't use
+        // Use posix `read(2)` on the underlying fd — see
+        // ``drainPipeToEnd(_:)`` for why we don't use
         // `FileHandle.readDataToEndOfFile()` on macOS 26.
         let stdoutData = drainPipeToEnd(stdoutPipe.fileHandleForReading)
         let stderrData = drainPipeToEnd(stderrPipe.fileHandleForReading)
@@ -425,9 +432,19 @@ struct MCPSubprocessIntegrationTests {
     /// Drain a pipe's read end to EOF using posix `read(2)`. The
     /// equivalent `FileHandle.readDataToEndOfFile()` shares the same
     /// blocking-quirk codepath as `FileHandle.read(upToCount:)` on
-    /// macOS 26 — see ``StreamingLineReader`` for the long form.
-    /// Returns immediately if the writer end is closed and the pipe is
-    /// empty.
+    /// macOS 26: it does NOT return as soon as bytes are available on
+    /// a pipe; it blocks until the buffer fills (~4096 bytes) or the
+    /// writer closes the pipe. Using `Darwin.read(_:_:_:)` on the raw
+    /// fd sidesteps that codepath. Returns immediately if the writer
+    /// end is closed and the pipe is empty.
+    ///
+    /// `read(2)` can return `-1` with `errno == EINTR` when a signal
+    /// interrupts the call before any bytes are transferred — that's
+    /// recoverable, so we loop and retry rather than treating it as
+    /// EOF (treating EINTR as EOF would silently truncate captured
+    /// stdout/stderr). Any other `errno` is treated as terminal: the
+    /// fd is unlikely to recover and the test is in cleanup. See
+    /// `man 2 read` on macOS for the full errno surface.
     private func drainPipeToEnd(_ handle: FileHandle) -> Data {
         let fd = handle.fileDescriptor
         var collected = Data()
@@ -437,8 +454,28 @@ struct MCPSubprocessIntegrationTests {
                 guard let base = ptr.baseAddress else { return -1 }
                 return Darwin.read(fd, base, ptr.count)
             }
-            if n <= 0 { break }
-            collected.append(Data(buf[0..<n]))
+            if n > 0 {
+                collected.append(Data(buf[0..<n]))
+            } else if n == 0 {
+                // Real EOF: writer end is closed and the pipe is empty.
+                break
+            } else {
+                // n < 0 — inspect errno to distinguish recoverable
+                // EINTR from a terminal error.
+                let err = errno
+                if err == EINTR {
+                    continue
+                }
+                // Any other errno is terminal in this context. The fd
+                // is unlikely to recover; surface a diagnostic on
+                // stderr so a future test failure isn't blind, then
+                // bail.
+                FileHandle.standardError.write(Data(
+                    "drainPipeToEnd: read(\(fd)) failed with errno=\(err) (\(String(cString: strerror(err))))\n"
+                        .utf8
+                ))
+                break
+            }
         }
         return collected
     }

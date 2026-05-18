@@ -17,16 +17,21 @@ rather than an in-process mock.
 Files:
 
 - `Tests/DictamacMCPTests/MCPSubprocessIntegrationTests.swift` —
-  the integration test plus a `StreamingLineReader` helper. The
-  test sends `initialize`, `tools/list`, and `tools/call
-  transcribe_file` against the committed `hello-world.m4a`
-  fixture, then asserts the response shape, the version pin, the
-  capability surface (`tools` only, no `resources`/`prompts`/
-  `sampling`), the three documented tool names + schema fields,
-  and that the transcribed text contains at least one of `hello`,
-  `world`, `test`. Every line on subprocess stdout must parse as
-  a JSON-RPC envelope; any stderr line that decodes as a JSON-RPC
-  envelope fails the test (channel mis-routing guard).
+  the integration test plus a small `drainPipeToEnd(_:)` helper
+  that reads a pipe's read end to EOF via posix
+  `Darwin.read(_:_:_:)` on the underlying fd (working around the
+  same macOS 26 `FileHandle` blocking quirk described below). The
+  helper retries on `EINTR` so a stray signal during cleanup
+  cannot silently truncate captured stdout/stderr. The test sends
+  `initialize`, `tools/list`, and `tools/call transcribe_file`
+  against the committed `hello-world.m4a` fixture, then asserts
+  the response shape, the version pin, the capability surface
+  (`tools` only, no `resources`/`prompts`/ `sampling`), the three
+  documented tool names + schema fields, and that the transcribed
+  text contains at least one of `hello`, `world`, `test`. Every
+  line on subprocess stdout must parse as a JSON-RPC envelope;
+  any stderr line that decodes as a JSON-RPC envelope fails the
+  test (channel mis-routing guard).
 - `Makefile` — added a `test-integration` target that depends on
   `build` so the signed binary is guaranteed present before the
   suite runs end-to-end. The default `test` target is unchanged
@@ -68,8 +73,10 @@ Two consequences for this PR:
 1. The test reads subprocess stdout/stderr via posix
    `Darwin.read(_:_:_:)` on the underlying file descriptor rather
    than via `FileHandle.read(upToCount:)` /
-   `readDataToEndOfFile()`. `StreamingLineReader` documents the
-   reasoning inline.
+   `readDataToEndOfFile()`. The `drainPipeToEnd(_:)` helper in
+   the test file documents the reasoning inline, and retries on
+   `EINTR` so a signal during cleanup does not silently truncate
+   captured output.
 2. The test sends all three requests in a single batched write,
    then closes stdin before draining stdout. That's the same I/O
    pattern every in-process MCP server test in this target
