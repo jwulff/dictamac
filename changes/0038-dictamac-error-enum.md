@@ -100,9 +100,9 @@ A few decisions worth flagging:
   CLI track and depends on this enum being available.
 - The MCP transport (#5 epic) will consume `description` to build
   `{isError: true, content: [{type: "text", text: ...}]}` tool
-  responses, mapping `exitCode == 0` shipped failures to MCP's
+  responses, mapping non-zero `exitCode` failures to MCP's
   protocol-level error envelope shape.
-- Voice Memos library discovery (#?) will populate the
+- Voice Memos library discovery (#14) will populate the
   `voiceMemoLibraryMissing.searched` URLs at the actual probe sites.
 - The Files & Folders TCC deep-link string is documented in
   CLAUDE.md / PLAN §7 U6 but not enforced at the type level — when

@@ -137,7 +137,7 @@ public enum DictamacError: Error, CustomStringConvertible {
     ///
     /// Exposed as a property so tests can assert the surface without
     /// poking a file handle; production callers should prefer
-    /// ``writeStderrLine(to:)`` or ``exit(_:)``.
+    /// ``writeStderrLine(to:)`` or ``exit()``.
     public var formattedStderrLine: String {
         description + "\n"
     }
@@ -150,7 +150,7 @@ public enum DictamacError: Error, CustomStringConvertible {
     ///
     /// Encoding failure (effectively impossible for UTF-8 of
     /// `description`) silently no-ops rather than throwing — the
-    /// caller is about to call ``exit(_:)`` anyway and surfacing a
+    /// caller is about to call ``exit()`` anyway and surfacing a
     /// throw would only complicate the unconditional cleanup path.
     public func writeStderrLine(to handle: FileHandle = .standardError) {
         guard let data = formattedStderrLine.data(using: .utf8) else { return }
