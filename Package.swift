@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "DictamacCore", targets: ["DictamacCore"]),
         .library(name: "DictamacSpeech", targets: ["DictamacSpeech"]),
         .library(name: "DictamacVoiceMemos", targets: ["DictamacVoiceMemos"]),
+        .library(name: "DictamacMCP", targets: ["DictamacMCP"]),
         .library(name: "DictamacCLI", targets: ["DictamacCLI"]),
     ],
     dependencies: [
@@ -41,11 +42,16 @@ let package = Package(
             dependencies: ["DictamacCore"]
         ),
         .target(
+            name: "DictamacMCP",
+            dependencies: ["DictamacCore"]
+        ),
+        .target(
             name: "DictamacCLI",
             dependencies: [
                 "DictamacCore",
                 "DictamacSpeech",
                 "DictamacVoiceMemos",
+                "DictamacMCP",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -59,6 +65,10 @@ let package = Package(
             resources: [
                 .copy("Fixtures"),
             ]
+        ),
+        .testTarget(
+            name: "DictamacMCPTests",
+            dependencies: ["DictamacMCP", "DictamacCore"]
         ),
         .testTarget(
             name: "DictamacCLITests",
