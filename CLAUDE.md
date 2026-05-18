@@ -86,7 +86,7 @@ Invariants enforced by tests:
   parity is non-negotiable.
 - **stdout = transcript content. stderr = everything else.**
 - **Exit code 0 on success, non-zero otherwise.** Specific codes per
-  failure class — see `docs/PLAN.md` §9.
+  failure class — see `docs/PLAN.md` §4 (CLI Surface → Exit Codes).
 - **No state persisted between invocations.** No daemon, no cache file.
   The locale model is the only on-disk state, owned by the OS.
 
@@ -102,8 +102,10 @@ Invariants enforced by tests:
 - **Ad-hoc code signing** with entitlements for SpeechAnalyzer; no
   Apple Developer account required
 - **MCP** via JSON-RPC 2.0 over stdio
-- **No Python, no GPU, no model download** — the speech model ships with
-  the OS
+- **No Python, no GPU, no app-bundled speech model** — the
+  OS-managed locale asset is installed on first use by the
+  `SpeechAnalyzer` framework (see "Locale model installation" below);
+  dictamac never ships its own model binary
 
 ---
 
@@ -420,6 +422,10 @@ Calling `analyzer.start()` off the main actor crashes with `SIGTRAP`.
 
 - `com.apple.security.cs.disable-library-validation`
 - `com.apple.security.cs.allow-jit`
+- `com.apple.security.device.audio-input`
+
+These must match `Resources/dictamac.entitlements` exactly — keep both
+in sync. See `docs/PLAN.md` §7 U2 for the rationale on each.
 
 ### Required TCC permissions
 
@@ -488,6 +494,8 @@ stderr. `--verbose` adds more stderr output; it never changes stdout.
 - [ ] **All review comments addressed** (see below)
 - [ ] Test attestation in every commit
 - [ ] `changes/NNNN-short-slug.md` added describing the why-and-how
+  (pure-doc PRs — typo fixes, README polish — can skip this; see
+  `changes/README.md`)
 
 ### Review feedback protocol
 
