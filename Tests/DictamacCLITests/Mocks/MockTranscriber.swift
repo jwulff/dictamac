@@ -34,7 +34,10 @@ actor MockTranscriber: Transcriber {
 /// CLI dispatch tests. Keeps the call sites readable — most tests only
 /// care that the transcript flowed through, not its content.
 enum TranscriptFixture {
-    static func canned(text: String = "hello world") -> Transcript {
+    static func canned(
+        text: String = "hello world",
+        source: TranscriptSource = .file(path: "/mock/path.m4a")
+    ) -> Transcript {
         Transcript(
             segments: [
                 TranscriptSegment(
@@ -47,7 +50,7 @@ enum TranscriptFixture {
             locale: "en-US",
             durationSeconds: 1,
             model: "MockTranscriber",
-            source: .file(path: "/mock/path.m4a")
+            source: source
         )
     }
 }

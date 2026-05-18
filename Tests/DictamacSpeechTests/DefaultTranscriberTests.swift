@@ -45,4 +45,39 @@ struct DefaultTranscriberTests {
         // so it's a stable public contract; tests assert the literal.
         #expect(DefaultTranscriber.modelIdentifier == "SpeechAnalyzer/macOS26")
     }
+
+    // MARK: - Request source → Transcript source mapping (PR #43)
+
+    @Test func fileRequestSourceMapsToFileTranscriptSourceWithPath() {
+        // The internal request source carries a URL for both .file and
+        // .stdin; the external transcript source must encode the path
+        // ONLY for .file, since that's the user-supplied stable
+        // reference the JSON schema (PLAN.md §6) promises.
+        let url = URL(fileURLWithPath: "/tmp/some-audio.m4a")
+        let result = DefaultTranscriber.transcriptSource(
+            for: .file(url),
+            audioURL: url
+        )
+        #expect(result == .file(path: "/tmp/some-audio.m4a"))
+    }
+
+    @Test func stdinRequestSourceMapsToStdinTranscriptSourceWithoutPath() {
+        // Regression test for the PR #43 bug: previously this collapsed
+        // to `.file(path: audioURL.path)`, leaving JSON consumers with
+        // a dangling /tmp/dictamac-stdin-...m4a path. The fix: emit the
+        // path-less `.stdin` variant so consumers see {"type":"stdin"}
+        // and can distinguish piped input from a real file.
+        let stagedURL = URL(fileURLWithPath: "/tmp/dictamac-stdin-ABC.m4a")
+        let result = DefaultTranscriber.transcriptSource(
+            for: .stdin(stagedURL),
+            audioURL: stagedURL
+        )
+        #expect(result == .stdin)
+        // Belt-and-suspenders: assert it is NOT the file variant by any
+        // path, so a future refactor that re-introduced the original
+        // bug would fail this expectation with a clear diff.
+        if case .file = result {
+            Issue.record("expected .stdin, got .file — the PR #43 regression has returned")
+        }
+    }
 }

@@ -75,6 +75,7 @@ public final class DefaultTranscriber: Transcriber {
 
     public func transcribe(_ request: TranscriptionRequest) async throws -> Transcript {
         let audioURL = try Self.url(from: request.source)
+        let transcriptSource = Self.transcriptSource(for: request.source, audioURL: audioURL)
         let audioFile = try Self.openAudioFile(at: audioURL)
         let locale = request.locale
 
@@ -138,7 +139,7 @@ public final class DefaultTranscriber: Transcriber {
             locale: resolvedLocale,
             durationSeconds: durationSeconds,
             model: Self.modelIdentifier,
-            source: .file(path: audioURL.path)
+            source: transcriptSource
         )
     }
 
@@ -149,10 +150,46 @@ public final class DefaultTranscriber: Transcriber {
         case .file(let url), .stdin(let url):
             // Both shapes carry a local file URL by construction
             // (`AudioFileResolver` validates the path; the stdin
-            // resolver, when it lands in #12, will have already drained
-            // bytes to a temp file). The transcriber doesn't care which
-            // it is — both behave identically from here on down.
+            // resolver drains bytes to a temp file before handing the
+            // URL here). The transcriber reads from both URLs the same
+            // way; only the emitted ``TranscriptSource`` differs (see
+            // ``transcriptSource(for:audioURL:)``).
             return url
+        }
+    }
+
+    /// Map a ``TranscriptionRequest.Source`` onto the
+    /// ``TranscriptSource`` variant that lands in the emitted
+    /// ``Transcript``. The two enums look similar but serve different
+    /// layers:
+    ///
+    /// - ``TranscriptionRequest.Source`` is the *internal* descriptor of
+    ///   where the bytes live on disk right now. Both `.file` and
+    ///   `.stdin` carry a URL; the transcriber treats them identically.
+    /// - ``TranscriptSource`` is the *external* descriptor stamped into
+    ///   the JSON schema (PLAN.md §6). For `.file` the path is a stable,
+    ///   user-meaningful reference. For `.stdin` the path is a temp file
+    ///   the CLI deletes immediately after transcription, so we MUST NOT
+    ///   leak it into the JSON output — `.stdin` is encoded as
+    ///   `{"type": "stdin"}` with no path. This is exactly the bug PR #43
+    ///   addresses: previously both variants collapsed to
+    ///   `.file(path: audioURL.path)`, leaving JSON consumers with a
+    ///   dangling `/tmp/dictamac-stdin-...m4a` path they could neither
+    ///   read nor distinguish from a real file.
+    ///
+    /// Internal (not `private`) so unit tests in the same module can
+    /// assert the mapping without spinning up ``SpeechAnalyzer``. The
+    /// integration test in ``DefaultTranscriberIntegrationTests`` exercises
+    /// the full pipeline; this seam covers the pure mapping in isolation.
+    static func transcriptSource(
+        for requestSource: TranscriptionRequest.Source,
+        audioURL: URL
+    ) -> TranscriptSource {
+        switch requestSource {
+        case .file:
+            return .file(path: audioURL.path)
+        case .stdin:
+            return .stdin
         }
     }
 

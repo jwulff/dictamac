@@ -281,6 +281,72 @@ struct ResolverWiringTests {
         #expect(stdout.contains("hello agent"))
     }
 
+    // MARK: - Dispatch helper preserves the transcript's source verbatim
+
+    @Test func dispatcherDoesNotRewriteStdinTranscriptSource() async {
+        // PR #43 regression guard: the dispatch helper must NOT rewrite
+        // the source the transcriber emitted between transcribe() and
+        // format(). If a future refactor (e.g. Approach B from the
+        // review thread) reintroduced post-hoc source patching at the
+        // CLI layer, this test would catch it — the .stdin variant the
+        // mock transcriber emits should land in the JSON unchanged.
+        let resolver = MockAudioFileResolver()
+        let transcriber = MockTranscriber(
+            transcriptToReturn: TranscriptFixture.canned(
+                text: "piped audio",
+                source: .stdin
+            )
+        )
+        let recorder = OutputRecorder()
+
+        await runResolveAndTranscribeForTest(
+            source: .stdin,
+            resolver: resolver,
+            transcriber: transcriber,
+            recorder: recorder,
+            wantsJSON: true
+        )
+
+        let stdout = recorder.stdoutText
+        #expect(stdout.contains("\"type\" : \"stdin\""),
+                "expected stdin source.type to be preserved in the JSON, got:\n\(stdout)")
+        #expect(!stdout.contains("\"path\""),
+                "stdin transcript source must not carry a path key in JSON")
+    }
+
+    @Test func dispatcherDoesNotRewriteFileTranscriptSource() async {
+        // Symmetric guard for the file path: the transcript-emitted
+        // file source (with its real path) must reach the JSON output
+        // intact. Together with the stdin test above, this pins the
+        // "dispatcher is a pure pass-through for transcript.source"
+        // contract from both sides.
+        let resolver = MockAudioFileResolver()
+        let transcriber = MockTranscriber(
+            transcriptToReturn: TranscriptFixture.canned(
+                text: "real file",
+                source: .file(path: "/users/example/audio.m4a")
+            )
+        )
+        let recorder = OutputRecorder()
+
+        await runResolveAndTranscribeForTest(
+            source: .path("/tmp/x.m4a"),
+            resolver: resolver,
+            transcriber: transcriber,
+            recorder: recorder,
+            wantsJSON: true
+        )
+
+        let stdout = recorder.stdoutText
+        #expect(stdout.contains("\"type\" : \"file\""))
+        // JSONEncoder escapes forward slashes (`\/`), so match the
+        // escaped form. Parsing the JSON would be a cleaner assertion;
+        // a substring check keeps the test cheap and matches the style
+        // of the sibling tests above.
+        #expect(stdout.contains(#"\/users\/example\/audio.m4a"#),
+                "expected the transcriber-emitted path to be preserved verbatim")
+    }
+
     // MARK: - Test helper
 
     /// Drives ``runResolveAndTranscribe`` with a `Void`-returning exit

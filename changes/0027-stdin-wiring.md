@@ -5,6 +5,19 @@ Issues: Closes #27 (Refs #3)
 
 ## What changed
 
+`TranscriptSource` (PLAN.md §6 schema) grew a third variant, `.stdin`,
+which encodes to the path-less `{"type": "stdin"}` JSON object.
+`DefaultTranscriber` now dispatches on the incoming
+`TranscriptionRequest.Source` variant and emits `.stdin` for piped
+input and `.file(path:)` for user-supplied file paths — previously
+both collapsed to `.file(path: audioURL.path)`, which leaked the
+already-deleted `/tmp/dictamac-stdin-...m4a` staging path into the
+JSON and left consumers unable to distinguish a pipe from a real
+file. Tests assert both the new `.stdin` variant and the unchanged
+`.file` behavior; the dispatch helper is also pinned as a pure
+pass-through for `transcript.source` so a future refactor cannot
+re-introduce the bug at the CLI layer. (See PR #43 review thread.)
+
 Both the file-path and stdin handlers in `ModeHandlers.production(...)`
 now route audio intake through `AudioFileResolver.resolve(source:)`
 before invoking `Transcriber.transcribe(_:)`. The two handlers share a
