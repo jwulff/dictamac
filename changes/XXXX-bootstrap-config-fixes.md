@@ -44,10 +44,23 @@ Net effect after this PR:
 2. **Iterate every commit in the pushed range.** The old hook ran a
    single `grep` against `git log --format=%B "$RANGE"`, so a
    multi-commit push slipped through whenever *any* commit had the
-   trailer. The new loop iterates `git rev-list $remote..$local` (or
-   merge-base on initial push), collects per-commit misses, and prints
-   the offending `sha title` list to make remediation obvious. Initial
-   push correctly handles the all-zeros `$remote_sha`.
+   trailer. The new loop iterates `git rev-list $remote..$local` for
+   existing-branch updates and collects per-commit misses, printing the
+   offending `sha title` list to make remediation obvious. Initial push
+   correctly handles the all-zeros `$remote_sha` — see fix 2b below for
+   the orphan-branch case.
+
+2b. **Orphan-branch initial push iterates every commit on the branch,
+   not just the tip.** When `$remote_sha` is all zeros and there is no
+   merge base with `main`/`master`, the previous fallback used
+   `git rev-list -1 "$local_sha"` (max-count of one) — so an orphan
+   branch with several commits only got its tip checked and the earlier
+   commits could ship without attestation. The new path uses
+   `git rev-list "$local_sha" --not --branches=main --not --branches=master`
+   to enumerate every commit reachable from the pushed tip but not from
+   either base branch. If neither base branch exists locally (truly
+   orphan repo), it falls back to `git rev-list "$local_sha"` so the
+   full branch history is still checked rather than silently bypassed.
 
 3. **Token name alignment.** Warning output now uses
    `[dictamac-tests-passed: ...]` everywhere — extracted into a single
@@ -106,6 +119,35 @@ with no runner):
 
 - Per-commit iteration: warns + lists the two unattested commits;
   non-interactive mode aborts with the documented token.
+- Orphan-branch initial push: a scratch repo with two commits on an
+  orphan branch (no `main`/`master`) and an all-zeros `remote_sha`
+  flags BOTH commits as missing attestation and aborts with exit 1.
+  Manual command (used to verify fix 2b):
+
+  ```bash
+  TMPDIR=$(mktemp -d)
+  cd "$TMPDIR"
+  git init -q -b orphan-branch
+  mkdir -p .githooks
+  cp /path/to/dictamac/.githooks/pre-push .githooks/pre-push
+  chmod +x .githooks/pre-push
+  git config core.hooksPath .githooks
+  git config user.email "test@example.com" && git config user.name "T"
+  printf 'test:\n\t@echo ok\n' > Makefile && git add Makefile
+  git commit -q -m "untested commit 1"
+  git commit -q --allow-empty -m "untested commit 2"
+  TIP=$(git rev-parse HEAD)
+  ZERO=0000000000000000000000000000000000000000
+  printf 'refs/heads/orphan %s refs/heads/orphan %s\n' "$TIP" "$ZERO" \
+    | .githooks/pre-push origin "ssh://orphan-test"
+  # Expected: exit 1, both "untested commit 1" and "untested commit 2"
+  # listed as missing the [dictamac-tests-passed: ...] trailer.
+  ```
+
+  A parallel scratch repo with a `main` branch confirmed that a new
+  feature branch sharing a base with `main` still excludes the main
+  commit and flags only the feature commits; the existing-branch
+  update path (`$remote_sha != 0..0`) is unchanged.
 - Detect-and-fail: scratch repo with no Makefile/Package.swift now
   exits 1 with the "no test runner detected" error.
 - /dev/tty prompt: reached under a `script(1)`-allocated PTY; the
