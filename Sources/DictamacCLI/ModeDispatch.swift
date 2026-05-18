@@ -104,20 +104,26 @@ public struct ModeHandlers: Sendable {
             },
             mcp: {
                 // Build an MCP server bound to the process's standard
-                // handles and register the production handler set. The
-                // transport foundation came from #18; this PR (#22)
-                // adds the `initialize` + `tools/list` handlers via
-                // ``ProductionMCPHandlers/register(on:)``. The
-                // `tools/call` dispatch will plug in through the same
-                // entry point in #26.
+                // handles and register the production handler set.
+                // The `initialize` + `tools/list` handlers came from
+                // #22; #26 adds `tools/call` via the overload that
+                // accepts the shared ``Transcriber`` +
+                // ``AudioFileResolver`` so the MCP transport rides
+                // the same core the CLI does.
                 //
                 // The server runs to EOF on stdin; once the loop
                 // returns we exit 0 to match the CLI's success
                 // contract. Errors thrown by individual handlers are
-                // surfaced as JSON-RPC error responses inside the
-                // loop, never as process-exit failures.
+                // surfaced as JSON-RPC error responses (malformed
+                // requests) or `isError: true` tool envelopes
+                // (`DictamacError`s) inside the loop, never as
+                // process-exit failures.
                 let server = MCPServer()
-                await ProductionMCPHandlers.register(on: server)
+                await ProductionMCPHandlers.register(
+                    on: server,
+                    transcriber: transcriber,
+                    audioResolver: resolver
+                )
                 await server.serve()
                 Darwin.exit(0)
             }

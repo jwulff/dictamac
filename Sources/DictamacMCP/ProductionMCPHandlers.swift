@@ -1,4 +1,5 @@
 import Foundation
+import DictamacCore
 
 /// Production MCP method handlers.
 ///
@@ -8,21 +9,48 @@ import Foundation
 /// exposed for unit tests that need to exercise a handler without
 /// standing up a server.
 ///
-/// As new MCP methods land (notably `tools/call` in issue #26),
-/// register them here so the wiring stays in one place.
+/// `tools/call` (#26) is registered via the overload that accepts a
+/// ``Transcriber`` + ``AudioFileResolver`` so the underlying core
+/// dependencies stay injectable.
 public enum ProductionMCPHandlers {
 
     // MARK: - Registration
 
-    /// Register every production handler on the given ``MCPServer``.
+    /// Register `initialize` + `tools/list` on the given ``MCPServer``.
     /// Idempotent: registering twice replaces the previous handlers
     /// (the actor enforces single-writer semantics).
+    ///
+    /// `tools/call` is intentionally NOT registered by this overload —
+    /// it requires production dependencies (``Transcriber`` /
+    /// ``AudioFileResolver``) that the MCP target doesn't own. The CLI
+    /// uses ``register(on:transcriber:audioResolver:)`` to wire all
+    /// three handlers in one pass; existing handshake-only tests keep
+    /// using this overload.
     public static func register(on server: MCPServer) async {
         await server.register(method: "initialize") { params in
             try await Self.initialize(params: params)
         }
         await server.register(method: "tools/list") { params in
             try await Self.toolsList(params: params)
+        }
+    }
+
+    /// Register every production handler — including `tools/call` —
+    /// on the given ``MCPServer``. The `tools/call` handler is bound
+    /// to the supplied ``Transcriber`` + ``AudioFileResolver`` so the
+    /// same dispatch path can be exercised end-to-end from tests.
+    public static func register(
+        on server: MCPServer,
+        transcriber: any Transcriber,
+        audioResolver: any AudioFileResolver
+    ) async {
+        await register(on: server)
+        let toolsCall = MCPToolsCallHandler(
+            transcriber: transcriber,
+            audioResolver: audioResolver
+        )
+        await server.register(method: "tools/call") { params in
+            try await toolsCall.handle(params: params)
         }
     }
 
