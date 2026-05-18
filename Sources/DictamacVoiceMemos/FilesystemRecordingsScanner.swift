@@ -103,16 +103,24 @@ public final class DefaultFilesystemRecordingsScanner: FilesystemRecordingsScann
         let fileManager = FileManager.default
 
         // Validate the library root up front so a missing or
-        // permission-denied directory raises a concrete error
-        // (`contentsOfDirectory` semantics) instead of silently yielding
-        // an empty walk. `FileManager.enumerator(at:...)` returns `nil`
-        // for both "no such directory" and "not a directory", which
-        // would be indistinguishable from "empty library".
-        _ = try fileManager.contentsOfDirectory(
-            at: libraryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
+        // not-a-directory path raises a concrete error instead of
+        // silently yielding an empty walk. `FileManager.enumerator(at:...)`
+        // returns `nil` for both "no such directory" and "not a
+        // directory", which would be indistinguishable from "empty
+        // library". A `fileExists(atPath:isDirectory:)` probe is O(1)
+        // — no scan of children — versus `contentsOfDirectory` which
+        // materializes every immediate child only to discard it.
+        var isDir: ObjCBool = false
+        let exists = fileManager.fileExists(atPath: libraryURL.path, isDirectory: &isDir)
+        guard exists, isDir.boolValue else {
+            // Mirror `contentsOfDirectory`'s NSCocoaErrorDomain shape so
+            // existing callers and tests that pattern-match on the
+            // thrown error stay correct.
+            throw CocoaError(
+                .fileReadNoSuchFile,
+                userInfo: [NSFilePathErrorKey: libraryURL.path]
+            )
+        }
 
         // `enumerator(at:...)` recurses by default. Skipping hidden
         // files drops `.Trash` and similar Apple-managed hidden trees;

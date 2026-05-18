@@ -14,8 +14,12 @@ exercise a resilience seam for the Voice Memos epic:
   `durationSeconds`, `assetPath`.
 - `FilesystemRecordingsScanner` protocol +
   `DefaultFilesystemRecordingsScanner` implementation — walks a Voice
-  Memos library directory non-recursively, opens each `*.m4a` via
-  `AVAudioFile`, and surfaces one `VoiceMemoMetadata` per asset.
+  Memos library directory recursively (`FileManager.enumerator` with
+  `.skipsHiddenFiles` and `.skipsPackageDescendants`; symlinks filtered
+  out post-hoc), opens each `*.m4a` via `AVAudioFile`, and surfaces one
+  `VoiceMemoMetadata` per asset. Recursion is needed because Voice
+  Memos may nest recordings under per-account or per-date
+  subdirectories.
 - 8 Swift Testing cases covering empty directories, xattr probe
   precedence, corrupt-file skipping, `.icloud` placeholder skipping,
   and the don't-throw-on-per-entry-failure invariant.
@@ -76,10 +80,16 @@ A few decisions worth flagging:
   download orchestration is out of scope for the epic (#4) — revisit
   when a user reports a real eviction. The doc-comment is the
   canonical record.
-- **Recursion behavior is documented as "no".** Voice Memos as of
-  macOS 26 writes all `.m4a` assets flat at the top of `Recordings/`.
-  If a future macOS release nests by date, this changes; the doc
-  comment is where that decision lives.
+- **Recursive walk via `FileManager.enumerator`.** Voice Memos may
+  nest recordings under per-account or per-date subdirectories, so the
+  scanner walks the whole tree under `Recordings/` (skipping hidden
+  files and package contents; symlinks filtered post-hoc since
+  `DirectoryEnumerationOptions` has no native skip-symlinks flag).
+  The root is pre-validated with `fileExists(atPath:isDirectory:)` —
+  cheaper than `contentsOfDirectory` since it doesn't materialize the
+  immediate children — so a missing or not-a-directory path throws
+  `CocoaError(.fileReadNoSuchFile)` instead of silently yielding an
+  empty walk.
 
 ## Test strategy
 
