@@ -7,8 +7,17 @@ Issues: Closes #50 (Refs #5)
 
 The two voice-memo MCP tools (`transcribe_voice_memo` and
 `list_voice_memos`) are no longer stubs. They now ride the same shared
-`VoiceMemosResolver` that the CLI's `--voice-memo` / `--list-voice-memos`
-flags use, so behaviour parity holds across the two transports.
+`VoiceMemosResolver` that the CLI's `--list-voice-memos` flag uses
+(`Sources/DictamacCLI/ListVoiceMemosHandler.swift`), so behaviour
+parity holds for the listing path across both transports.
+
+The CLI's `--voice-memo <query>` flag is **still a stub** — its
+`Mode.voiceMemo` branch in `Sources/DictamacCLI/ModeDispatch.swift`
+continues to route through `StubMessages.voiceMemoNotImplemented(...)`.
+That CLI-side wiring is tracked separately in #56 ("Wire CLI
+--voice-memo to VoiceMemosResolver"); this PR deliberately scopes to
+the MCP transport so the two changes can land and be reviewed
+independently.
 
 Files touched:
 

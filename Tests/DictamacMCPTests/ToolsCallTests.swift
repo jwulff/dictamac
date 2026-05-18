@@ -504,6 +504,23 @@ struct ToolsCallTests {
         }
     }
 
+    /// Whitespace-only queries must surface as `-32602`, not as a
+    /// downstream `voiceMemoNotFound` envelope. Without the trim,
+    /// `VoiceMemoQuery.parse("   ")` returns `.fuzzyTitle("")` and the
+    /// resolver reports "memo not found" — a misleading result for what
+    /// is really a malformed invocation.
+    @Test func transcribeVoiceMemoWhitespaceOnlyQueryRaisesInvalidParams() async throws {
+        let (handler, _, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("transcribe_voice_memo"),
+                "arguments": .object([
+                    "query": .string("   "),
+                ]),
+            ]))
+        }
+    }
+
     @Test func transcribeVoiceMemoWrongQueryTypeRaisesInvalidParams() async throws {
         let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
@@ -605,6 +622,31 @@ struct ToolsCallTests {
         #expect(listings[0].title == "Second")
         #expect(listings[1].identifier == "1")
         #expect(listings[1].title == "First")
+    }
+
+    /// The CLI's `--list-voice-memos --json` output (see
+    /// `ListVoiceMemosHandler.renderJSON`) ends in a single `\n`. The
+    /// MCP `list_voice_memos` content text must do the same so the two
+    /// transports stay byte-for-byte aligned — agents piping the text
+    /// through line-oriented tooling get the same bytes either way.
+    @Test func listVoiceMemosJSONContentTextEndsWithTrailingNewline() async throws {
+        let vmResolver = MockVoiceMemosResolver(listings: [])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([:]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result),
+              let text = envelope.texts.first else {
+            Issue.record("envelope missing or wrong shape: \(result)")
+            return
+        }
+        #expect(envelope.isError == false)
+        #expect(text.hasSuffix("\n"))
+        // Empty resolver → "[]\n", matching the CLI fallback shape.
+        #expect(text == "[]\n")
     }
 
     @Test func listVoiceMemosAppliesDefaultsWhenArgsMissing() async throws {

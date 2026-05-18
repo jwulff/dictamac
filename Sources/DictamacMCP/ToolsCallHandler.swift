@@ -169,7 +169,13 @@ public struct MCPToolsCallHandler: Sendable {
                 "transcribe_voice_memo 'query' must be a string."
             )
         }
-        guard !query.isEmpty else {
+        // Trim before the emptiness check. `VoiceMemoQuery.parse(_:)`
+        // also trims, so without this guard a whitespace-only query
+        // like "   " would slip past `!query.isEmpty`, parse to
+        // `.fuzzyTitle("")`, and surface as a useless `voiceMemoNotFound`
+        // envelope instead of the intended `-32602` protocol error.
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
             throw MCPProtocolError.invalidParams(
                 "transcribe_voice_memo 'query' must be a non-empty string."
             )
@@ -188,7 +194,7 @@ public struct MCPToolsCallHandler: Sendable {
             // ``DictamacError/voiceMemoLibraryMissing``, or
             // ``DictamacError/permissionDenied`` — all of which fall
             // out as `isError: true` envelopes below.
-            let parsedQuery = VoiceMemoQuery.parse(query)
+            let parsedQuery = VoiceMemoQuery.parse(trimmedQuery)
             let memo = try voiceMemosResolver.resolve(
                 parsedQuery,
                 now: Date()
@@ -302,7 +308,13 @@ public struct MCPToolsCallHandler: Sendable {
             encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(listings)
             let body = String(data: data, encoding: .utf8) ?? "[]"
-            return Self.toolSuccessEnvelope(text: body)
+            // Trailing newline matches the CLI's `--list-voice-memos
+            // --json` output (see `renderJSON` in
+            // `ListVoiceMemosHandler.swift`). The other tool envelopes
+            // already end with `\n` because `PlaintextFormatter` /
+            // `JSONFormatter` produce one; mirroring that here keeps
+            // transport parity byte-for-byte.
+            return Self.toolSuccessEnvelope(text: body + "\n")
         } catch let error as DictamacError {
             return Self.toolErrorEnvelope(error.mcpToolErrorText)
         } catch {
