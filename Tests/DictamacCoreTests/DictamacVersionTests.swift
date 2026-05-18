@@ -12,13 +12,20 @@ import Testing
 ///    not reachable through `Bundle.main` (the test runner is the main
 ///    bundle), so the value should be the documented fallback
 ///    `"0.0.0-unknown"`.
-/// 2. **Drift guard.** The value the binary will report at runtime is
-///    whatever `Resources/Info.plist` says — so this suite also reads
-///    `Resources/Info.plist` directly off disk and asserts that
-///    `CFBundleShortVersionString` and `CFBundleVersion` are both
-///    set and match. If a future agent bumps one but forgets the
-///    other (the exact bug this issue exists to prevent), the test
-///    fails loudly.
+/// 2. **Drift guard.** This suite reads `Resources/Info.plist` directly
+///    off disk and asserts that `CFBundleShortVersionString` and
+///    `CFBundleVersion` are both set and match. If a future agent bumps
+///    one but forgets the other (the exact bug this issue exists to
+///    prevent), the test fails loudly.
+///
+///    Scope: the drift guard verifies the plist's *contents only*. The
+///    end-to-end path — release binary actually reads its own embedded
+///    plist via `Bundle.main` and surfaces the version through `--version`
+///    and MCP `serverInfo.version` — requires `make build && make sign`
+///    and a manual `dictamac --version` check. `make test` (and the
+///    `.githooks/pre-push` hook) only runs the test suite, NOT the
+///    build/sign/run loop, so the production-binary version path is not
+///    automatically verified.
 struct DictamacVersionTests {
 
     // MARK: - Runtime contract
