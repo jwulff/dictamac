@@ -53,19 +53,56 @@ Apple's Voice Memos app transcribes recordings only when it feels like it — th
 
 ## Install
 
-Not yet released. See [docs/PLAN.md](docs/PLAN.md) for the implementation plan.
+### From source (recommended for now)
 
-Eventual install via Homebrew:
+```bash
+git clone https://github.com/jwulff/dictamac.git
+cd dictamac
+make build
+make install            # installs to ~/.local/bin by default
+make install PREFIX=/usr/local   # or override the prefix
+```
+
+`make build` ad-hoc signs the release binary with the entitlements
+`SpeechAnalyzer` needs at launch. Don't use `swift run` — it skips the
+codesign step and the resulting binary will `SIGTRAP` on first
+SpeechAnalyzer touch.
+
+### Homebrew (coming soon)
+
+Once the `jwulff/homebrew-tap` repo is published with the v0.1.0 formula,
+the recommended install will be:
 
 ```bash
 brew install jwulff/tap/dictamac
 ```
 
+This is **not yet available** — the tap repo and v0.1.0 release tag are
+post-merge user actions tracked in
+[#9](https://github.com/jwulff/dictamac/issues/9). Until then, use the
+from-source path above.
+
+A sample Homebrew formula lives at
+[`Formula/dictamac.rb`](Formula/dictamac.rb) so the formula can be
+reviewed alongside the code it builds; the canonical, brew-installable
+copy will live in the tap repo once it's published.
+
 ## Requirements
 
-- macOS 26 (Tahoe) or later — SpeechAnalyzer API
-- Apple Silicon recommended; Intel works but slower
-- Locale model installed (downloads automatically on first use)
+- **macOS 26 (Tahoe) or later** — uses the `SpeechAnalyzer` /
+  `SpeechTranscriber` APIs introduced in macOS 26. Older macOS releases
+  cannot run dictamac.
+- **Swift 6.x toolchain** — Xcode 16 or later, or a standalone Swift
+  toolchain installer. Required only when building from source (the
+  Homebrew formula also builds from source for now, so it also needs
+  this).
+- **Apple Silicon recommended**; Intel works but slower.
+- **Speech Recognition permission** — granted on first run via the
+  deep-link printed to stderr.
+- **Files & Folders permission** for Voice Memos library access, needed
+  only for `--voice-memo` / `--list-voice-memos` modes.
+- **Locale model** — downloads automatically on first use; needs a
+  working network connection at that moment.
 
 ## Related
 
