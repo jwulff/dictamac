@@ -1,4 +1,5 @@
 import Foundation
+import DictamacCore
 
 /// MCP protocol version this server speaks. Pin in ONE place; bumping
 /// this constant is the only mechanism for advertising a new revision.
@@ -33,14 +34,13 @@ public struct MCPServerIdentity: Sendable, Equatable {
     }
 
     /// Canonical identity used by `dictamac --mcp`. The version string
-    /// matches the `CommandConfiguration(version:)` value in
-    /// `Sources/DictamacCLI/Dictamac.swift`. The two will drift unless
-    /// kept in lockstep; a follow-up issue (see PR description) will
-    /// extract a single package-version constant so this duplication
-    /// can be removed.
+    /// is read from the binary's embedded Info.plist via
+    /// ``DictamacVersion/current``, which is the same source the CLI's
+    /// `--version` output reads from — so the CLI banner and the MCP
+    /// `serverInfo.version` cannot drift apart.
     public static let dictamac = MCPServerIdentity(
         name: "dictamac",
-        version: "0.0.0-dev",
+        version: DictamacVersion.current,
         vendor: "jwulff"
     )
 }

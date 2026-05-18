@@ -273,11 +273,22 @@ Notes:
 
 - `version` is a string ("1"), bumped on incompatible changes
 - `fullText` applies the same normalization as the `PlaintextFormatter` algorithm in §7 U7 (trim each segment, drop empties, collapse internal whitespace, join with a single ASCII space) — minus the trailing newline, since this is a JSON string field. For any non-empty transcript the CLI plaintext output is exactly `fullText + "\n"`, so the CLI and MCP transports stay byte-identical for the body content (per the §3 "thin shells over one core" invariant)
-- For Voice Memos, `source.type` is `"voice-memo"` with `identifier` and `title` instead of `path`. The asset URL inside the Voice Memos library (typically an opaque `<UUID>.m4a` path) is NOT surfaced — the identifier + title are the user-meaningful reference, and the path would be both unstable across machines and meaningless to a human consumer. Internally, `TranscriptionRequest.Source.voiceMemo(identifier:title:url:)` carries the resolved asset URL alongside the identifier and title, and `DefaultTranscriber` maps the request source onto the right `TranscriptSource` variant — the CLI and MCP voice-memo handlers do NOT rewrite the transcript's source after the fact. This is the parallel fix to the PR #43 stdin variant, addressing the PR #57 review observation that `--json --voice-memo` was emitting `source.type == "file"` with the asset path
-- For piped audio (CLI `dictamac < audio.m4a`), `source.type` is `"stdin"` with no other keys — the staged temp file the CLI drains stdin into is deleted immediately after transcription, so any path would be dangling by the time a consumer read the JSON. The payload-less shape is what lets JSON consumers distinguish piped input from a real file (PR #43)
+- `source.type` is a discriminator with three legal values: `"file"`, `"voice-memo"`, and `"stdin"`. The shape of the rest of the `source` object depends on which discriminator is in play:
+  - `"file"` carries `path` (absolute path on disk) — the shape shown in the canonical example above
+  - `"voice-memo"` carries `identifier` and `title` (no `path`) — emitted when the input was resolved via `--voice-memo <query>` or the `transcribe_voice_memo` MCP tool. The asset URL inside the Voice Memos library (typically an opaque `<UUID>.m4a` path) is NOT surfaced — the identifier + title are the user-meaningful reference, and the path would be both unstable across machines and meaningless to a human consumer. Internally, `TranscriptionRequest.Source.voiceMemo(identifier:title:url:)` carries the resolved asset URL alongside the identifier and title, and `DefaultTranscriber` maps the request source onto the right `TranscriptSource` variant
+  - `"stdin"` carries **no** `path`, `identifier`, or `title` — just `{"type": "stdin"}`. This shape is emitted when input was piped via stdin (the `-` positional literal on the CLI). The CLI stages the bytes into a temp file long enough to hand them to SpeechAnalyzer and then deletes that file immediately after transcription, so any path here would dangle by the time a consumer read the JSON. Surfacing the type but omitting the path is the deliberate signal: "this came from a pipe, do not try to re-open it"
+- Adding a new discriminator value is an additive variant on `source.type` — v1 consumers that don't recognize `"stdin"` are expected to fail loudly on decode rather than silently coerce, so `version` is NOT bumped for additive variants like this one
 - `confidence` may be absent on segments where SpeechAnalyzer doesn't expose it; treat absence as "unknown"
 - "Absent" means the JSON key is **omitted entirely** from the segment object (NOT `null`). `JSONFormatter` must drop the key when confidence is unknown; tests must assert key omission, not a `null` value.
 - `fullText` for zero segments is the empty string `""`. The CLI plaintext output for zero segments is a single newline `"\n"` — the universal stdout contract in §4 ("one trailing newline, nothing else") applies even when the transcript is empty, so empty-transcript runs behave identically to non-empty ones for downstream consumers.
+
+Example `source` shape for stdin input (every other top-level field — `version`, `locale`, `durationSeconds`, `model`, `segments`, `fullText` — is identical to the canonical example above):
+
+```json
+"source": {
+  "type": "stdin"
+}
+```
 
 ---
 
