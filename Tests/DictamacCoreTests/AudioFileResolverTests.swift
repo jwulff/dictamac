@@ -91,7 +91,10 @@ struct AudioFileResolverTests {
         // as exit 65 — same shape as the corrupt-file branch on the file
         // path. The temp file the resolver staged must be removed before
         // the error propagates (no leaks on the error path).
-        let garbage = Data((0..<128).map { _ in UInt8.random(in: 0...255) })
+        //
+        // Use a deterministic byte pattern (not RNG) so failures are
+        // bit-for-bit reproducible across runs and CI environments.
+        let garbage = Data(deterministicGarbage(length: 128))
 
         let pipe = Pipe()
         try pipe.fileHandleForWriting.write(contentsOf: garbage)
@@ -153,9 +156,11 @@ struct AudioFileResolverTests {
     @Test func stdinThrownErrorAlsoCleansUpTempFile() async throws {
         // Even when AVAudioFile fails, the resolver must remove the
         // temp file it staged from stdin — no leaks on the error path.
+        //
+        // Deterministic garbage pattern — reproducible across runs.
         let leakCheck = TempFileLeakChecker()
         let pipe = Pipe()
-        try pipe.fileHandleForWriting.write(contentsOf: Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
+        try pipe.fileHandleForWriting.write(contentsOf: Data(deterministicGarbage(length: 32)))
         try pipe.fileHandleForWriting.close()
         let resolver = DefaultAudioFileResolver(
             stdinProvider: { pipe.fileHandleForReading },
@@ -361,10 +366,20 @@ struct AudioFileResolverTests {
     private func writeCorruptFile() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dictamac-corrupt-\(UUID().uuidString).m4a")
-        // 64 bytes of garbage — definitely not a valid audio container.
-        let bytes = Data((0..<64).map { _ in UInt8.random(in: 0...255) })
+        // 64 bytes of deterministic garbage — definitely not a valid
+        // audio container. Reproducible across runs (no RNG).
+        let bytes = Data(deterministicGarbage(length: 64))
         try bytes.write(to: url)
         return url
+    }
+
+    /// Repeating `DEADBEEF` pattern truncated to `length`. Used in place
+    /// of `UInt8.random(...)` so tests that should fail AVAudioFile
+    /// validation do so on bit-identical input on every run — failures
+    /// become reproducible bug reports instead of flake.
+    private func deterministicGarbage(length: Int) -> [UInt8] {
+        let pattern: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
+        return (0..<length).map { pattern[$0 % pattern.count] }
     }
 
     private func writeSilentWAV(

@@ -1,6 +1,6 @@
 # Load audio from stdin via temp file
 
-PR: TBD
+PR: #39
 Issues: Closes #12 (Refs #2)
 
 ## What changed
