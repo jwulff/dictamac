@@ -22,7 +22,13 @@ public enum Mode: Equatable, Sendable {
 
     /// List Voice Memos. Stub-only here — epic #4 lands the real
     /// behavior plus `--since` / `--limit` plumbing.
-    case listVoiceMemos
+    ///
+    /// The payload carries the validated `--since` / `--limit` values
+    /// so the dispatch seam can hand them to the real handler when
+    /// epic #4 lands. Both are optional because either flag may be
+    /// omitted on the command line; the parser has already enforced
+    /// that they are only set when `--list-voice-memos` is also set.
+    case listVoiceMemos(since: String?, limit: Int?)
 
     /// Run the MCP JSON-RPC stdio server. Stub-only here — epic #5
     /// owns the real implementation.

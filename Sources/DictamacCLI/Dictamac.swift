@@ -159,7 +159,7 @@ public struct Dictamac: ParsableCommand {
                     "--list-voice-memos does not accept audio input flags or arguments."
                 )
             }
-            return .listVoiceMemos
+            return .listVoiceMemos(since: since, limit: limit)
         }
 
         // Content modes — exactly one input source required.

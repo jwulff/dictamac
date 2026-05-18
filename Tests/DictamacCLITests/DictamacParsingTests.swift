@@ -99,7 +99,27 @@ struct DictamacParsingTests {
     @Test func modeIsListVoiceMemosWhenFlagSet() throws {
         let cmd = try Dictamac.parse(["--list-voice-memos"])
         let mode = try cmd.resolveMode()
-        if case .listVoiceMemos = mode {} else {
+        if case .listVoiceMemos(let since, let limit) = mode {
+            #expect(since == nil)
+            #expect(limit == nil)
+        } else {
+            Issue.record("expected .listVoiceMemos mode, got \(mode)")
+        }
+    }
+
+    @Test func listVoiceMemosModePropagatesSinceAndLimit() throws {
+        // The parser validates `--since` / `--limit` as gated to
+        // `--list-voice-memos`; the resolved mode must also carry them
+        // through to the dispatch seam so a future real handler can
+        // honor the requested filters (see PR #42 review feedback).
+        let cmd = try Dictamac.parse([
+            "--list-voice-memos", "--since", "14d", "--limit", "20",
+        ])
+        let mode = try cmd.resolveMode()
+        if case .listVoiceMemos(let since, let limit) = mode {
+            #expect(since == "14d")
+            #expect(limit == 20)
+        } else {
             Issue.record("expected .listVoiceMemos mode, got \(mode)")
         }
     }

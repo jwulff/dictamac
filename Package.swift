@@ -18,11 +18,14 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "dictamac",
+            // The executable is a one-line wrapper around
+            // `Dictamac.main()` (see `Sources/dictamac/main.swift`);
+            // it only imports `DictamacCLI`. Speech + Core +
+            // ArgumentParser reach the binary transitively through
+            // `DictamacCLI`, so the executable target itself doesn't
+            // need to declare them.
             dependencies: [
                 "DictamacCLI",
-                "DictamacCore",
-                "DictamacSpeech",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .target(

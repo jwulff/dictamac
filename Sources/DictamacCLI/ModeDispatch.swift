@@ -13,18 +13,22 @@ import DictamacSpeech
 public struct ModeHandlers: Sendable {
     public typealias Handler = @Sendable () async -> Void
     public typealias StringHandler = @Sendable (String) async -> Void
+    public typealias ListVoiceMemosHandler = @Sendable (
+        _ since: String?,
+        _ limit: Int?
+    ) async -> Void
 
     public let file: StringHandler
     public let stdin: Handler
     public let voiceMemo: StringHandler
-    public let listVoiceMemos: Handler
+    public let listVoiceMemos: ListVoiceMemosHandler
     public let mcp: Handler
 
     public init(
         file: @escaping StringHandler,
         stdin: @escaping Handler,
         voiceMemo: @escaping StringHandler,
-        listVoiceMemos: @escaping Handler,
+        listVoiceMemos: @escaping ListVoiceMemosHandler,
         mcp: @escaping Handler
     ) {
         self.file = file
@@ -66,7 +70,12 @@ public struct ModeHandlers: Sendable {
                 )
                 error.exit()
             },
-            listVoiceMemos: {
+            listVoiceMemos: { _, _ in
+                // `since` / `limit` are accepted into the signature so
+                // the dispatch seam matches the real handler shape that
+                // ships with epic #4. The stub itself doesn't have
+                // anything to filter yet, so it drops the payload and
+                // reports the same "not yet implemented" message.
                 let error = DictamacError.argumentError(
                     StubMessages.listVoiceMemosNotImplemented
                 )
@@ -91,8 +100,8 @@ public func dispatch(mode: Mode, handlers: ModeHandlers) async {
         await handlers.stdin()
     case .voiceMemo(let query):
         await handlers.voiceMemo(query)
-    case .listVoiceMemos:
-        await handlers.listVoiceMemos()
+    case .listVoiceMemos(let since, let limit):
+        await handlers.listVoiceMemos(since, limit)
     case .mcp:
         await handlers.mcp()
     }

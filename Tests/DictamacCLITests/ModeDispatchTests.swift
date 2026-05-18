@@ -20,7 +20,9 @@ struct ModeDispatchTests {
             file: { path in await recorder.recordFile(path) },
             stdin: { await recorder.recordStdin() },
             voiceMemo: { q in await recorder.recordVoiceMemo(q) },
-            listVoiceMemos: { await recorder.recordListVoiceMemos() },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
             mcp: { await recorder.recordMCP() }
         )
 
@@ -35,7 +37,9 @@ struct ModeDispatchTests {
             file: { _ in await recorder.recordFile("should-not-be-called") },
             stdin: { await recorder.recordStdin() },
             voiceMemo: { _ in await recorder.recordVoiceMemo("nope") },
-            listVoiceMemos: { await recorder.recordListVoiceMemos() },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
             mcp: { await recorder.recordMCP() }
         )
 
@@ -50,7 +54,9 @@ struct ModeDispatchTests {
             file: { _ in await recorder.recordFile("nope") },
             stdin: { await recorder.recordStdin() },
             voiceMemo: { q in await recorder.recordVoiceMemo(q) },
-            listVoiceMemos: { await recorder.recordListVoiceMemos() },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
             mcp: { await recorder.recordMCP() }
         )
 
@@ -65,13 +71,35 @@ struct ModeDispatchTests {
             file: { _ in await recorder.recordFile("nope") },
             stdin: { await recorder.recordStdin() },
             voiceMemo: { _ in await recorder.recordVoiceMemo("nope") },
-            listVoiceMemos: { await recorder.recordListVoiceMemos() },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
             mcp: { await recorder.recordMCP() }
         )
 
-        await dispatch(mode: .listVoiceMemos, handlers: handlers)
+        await dispatch(mode: .listVoiceMemos(since: nil, limit: nil), handlers: handlers)
         let calls = await recorder.calls
-        #expect(calls == ["listVoiceMemos"])
+        #expect(calls == ["listVoiceMemos:since=nil,limit=nil"])
+    }
+
+    @Test func listVoiceMemosModePassesSinceAndLimitToHandler() async {
+        let recorder = HandlerRecorder()
+        let handlers = ModeHandlers(
+            file: { _ in await recorder.recordFile("nope") },
+            stdin: { await recorder.recordStdin() },
+            voiceMemo: { _ in await recorder.recordVoiceMemo("nope") },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
+            mcp: { await recorder.recordMCP() }
+        )
+
+        await dispatch(
+            mode: .listVoiceMemos(since: "7d", limit: 5),
+            handlers: handlers
+        )
+        let calls = await recorder.calls
+        #expect(calls == ["listVoiceMemos:since=7d,limit=5"])
     }
 
     @Test func mcpModeDispatchesToMCPHandler() async {
@@ -80,7 +108,9 @@ struct ModeDispatchTests {
             file: { _ in await recorder.recordFile("nope") },
             stdin: { await recorder.recordStdin() },
             voiceMemo: { _ in await recorder.recordVoiceMemo("nope") },
-            listVoiceMemos: { await recorder.recordListVoiceMemos() },
+            listVoiceMemos: { since, limit in
+                await recorder.recordListVoiceMemos(since: since, limit: limit)
+            },
             mcp: { await recorder.recordMCP() }
         )
 
@@ -100,6 +130,10 @@ actor HandlerRecorder {
     func recordFile(_ path: String) { calls.append("file:\(path)") }
     func recordStdin() { calls.append("stdin") }
     func recordVoiceMemo(_ query: String) { calls.append("voiceMemo:\(query)") }
-    func recordListVoiceMemos() { calls.append("listVoiceMemos") }
+    func recordListVoiceMemos(since: String?, limit: Int?) {
+        calls.append(
+            "listVoiceMemos:since=\(since ?? "nil"),limit=\(limit.map(String.init) ?? "nil")"
+        )
+    }
     func recordMCP() { calls.append("mcp") }
 }

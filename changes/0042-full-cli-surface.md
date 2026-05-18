@@ -1,6 +1,6 @@
 # Add full CLI flag surface with mode dispatch
 
-PR: TBD
+PR: #42
 Issues: Closes #13 (Refs #3)
 
 ## What changed
