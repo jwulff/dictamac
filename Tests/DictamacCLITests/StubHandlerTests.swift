@@ -9,14 +9,6 @@ import Foundation
 /// touching the real `FileHandle.standardError` or process exit.
 struct StubHandlerTests {
 
-    // MARK: - stdin stub points at #27
-
-    @Test func stdinStubMessageMentionsIssue27() {
-        let message = StubMessages.stdinNotImplemented
-        #expect(message.contains("stdin"))
-        #expect(message.contains("#27"))
-    }
-
     // MARK: - voice-memo / list-voice-memos point at epic #4
 
     @Test func voiceMemoStubMessageMentionsEpic4() {
@@ -39,12 +31,15 @@ struct StubHandlerTests {
 
     // MARK: - Stub handlers write to provided stderr handle
 
-    @Test func stdinStubWritesToProvidedStderrHandle() throws {
+    @Test func stubMessagesWriterTargetsProvidedHandle() throws {
+        // Smoke-test the shared writer helper through one of the
+        // remaining stub messages; the dispatcher-level stdin path is
+        // exercised in `ResolverWiringTests` now that #27 has wired it.
         let pipe = Pipe()
-        StubMessages.writeStderrLine(StubMessages.stdinNotImplemented, to: pipe.fileHandleForWriting)
+        StubMessages.writeStderrLine(StubMessages.mcpNotImplemented, to: pipe.fileHandleForWriting)
         try pipe.fileHandleForWriting.close()
         let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        #expect(text.contains("stdin"))
+        #expect(text.contains("MCP") || text.contains("mcp"))
         #expect(text.hasSuffix("\n"))
     }
 }
