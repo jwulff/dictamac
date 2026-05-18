@@ -1,4 +1,5 @@
 import Foundation
+import Speech
 import Testing
 @testable import DictamacCore
 @testable import DictamacSpeech
@@ -6,17 +7,24 @@ import Testing
 /// Integration tests against the real ``SpeechAPILocaleModelChecker``.
 ///
 /// These tests touch the actual `AssetInventory` / `SpeechTranscriber`
-/// APIs and assume the en-US speech model is already installed on the
-/// host (which is the standard developer-laptop state and the explicit
-/// precondition for PR #40's end-to-end fixture test).
+/// APIs. The fast-path assertion is host-dependent: it requires the
+/// en-US speech model to be already installed on the test runner. A
+/// fresh CI image or a freshly-provisioned developer machine has no
+/// models installed; running the test there would (correctly) take the
+/// slow `.supported` → install path and emit progress lines, failing
+/// the assertion for an environmental reason rather than a regression
+/// in the checker.
 ///
-/// Failure modes that REQUIRE network unreachability or an
-/// `.unsupported` locale on the host are not exercised here — those
-/// are covered by the protocol-seam tests in
-/// ``LocaleModelCheckerTests`` via ``MockLocaleModelChecker``. This
-/// file's job is to pin the already-installed fast path (no progress
-/// output, no throw) against the real framework so a regression in the
-/// production wrapper is caught locally.
+/// Rather than make CI conditional on a manual one-time bootstrap of
+/// the en-US model, the test preflights `AssetInventory.status` and
+/// records a skip when the precondition isn't met. This keeps the suite
+/// green on both seasoned developer machines (where it really does
+/// validate the fast path) and on fresh hosts (where it explicitly
+/// announces why it's skipping). Failure modes that don't depend on
+/// host state — the `.unsupported` and `@unknown default` branches and
+/// every reason string — are covered by the pure mapping tests in
+/// ``SpeechAPILocaleModelCheckerMappingTests``, and by the
+/// mock-driven failure-mode tests in ``LocaleModelCheckerTests``.
 struct SpeechAPILocaleModelCheckerIntegrationTests {
 
     /// Capture sink for asserting "no progress output emitted". Mirrors
@@ -42,15 +50,38 @@ struct SpeechAPILocaleModelCheckerIntegrationTests {
     }
 
     @Test func alreadyInstalledEnUSEmitsNoProgressAndDoesNotThrow() async throws {
-        let capture = ProgressCapture()
-        let checker = SpeechAPILocaleModelChecker()
         let locale = Locale(identifier: "en-US")
 
-        // If the host doesn't have en-US installed, this test would
-        // emit "Downloading…" / "installed." lines instead. That's not
-        // a regression in the checker — it's a precondition failure
-        // for the test runner. Surface the captured lines on failure
-        // so the diagnostic is obvious.
+        // Preflight: only run this assertion when the en-US model is
+        // already installed. On a fresh host the slow path is the
+        // correct behavior and would emit progress lines, so the
+        // assertion would fail for an environmental reason. Skip
+        // explicitly with a diagnostic pointing at how to install.
+        let probe = SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: [],
+            attributeOptions: []
+        )
+        let rawStatus = await AssetInventory.status(forModules: [probe])
+        guard rawStatus == .installed else {
+            Issue.record(
+                """
+                skipped: en-US speech model is not installed on this host \
+                (AssetInventory.status reported \(rawStatus)). The fast-path \
+                assertion is host-dependent — run dictamac once against \
+                Tests/DictamacSpeechTests/Fixtures/hello-world.m4a to trigger \
+                the first-run download, or rely on the pure mapping tests in \
+                SpeechAPILocaleModelCheckerMappingTests for status-to-error \
+                coverage that does not require an installed model.
+                """
+            )
+            return
+        }
+
+        let capture = ProgressCapture()
+        let checker = SpeechAPILocaleModelChecker()
+
         try await checker.ensureModelAvailable(
             for: locale,
             progress: capture.sink()
@@ -58,7 +89,7 @@ struct SpeechAPILocaleModelCheckerIntegrationTests {
 
         await capture.waitForPendingWrites()
         let captured = await capture.lines
-        let diagnostic: Comment = "expected zero progress lines on already-installed fast path; got \(captured). If this fails, the en-US model is not yet installed on this host — run dictamac once against the en-US fixture to trigger the first-run download."
+        let diagnostic: Comment = "expected zero progress lines on already-installed fast path; got \(captured)."
         #expect(captured.isEmpty, diagnostic)
     }
 }
