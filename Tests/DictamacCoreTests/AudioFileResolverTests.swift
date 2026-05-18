@@ -324,6 +324,9 @@ struct AudioFileResolverTests {
                 underlying: NSError(domain: "x", code: 0)
             ).exitCode == 65
         )
+        #expect(
+            DictamacError.speechAnalyzerUnavailable(reason: "Locale en-XX is not supported on this device").exitCode == 67
+        )
     }
 
     // MARK: - Helpers (synthesize fixtures at runtime — no PII, no committed binaries)
