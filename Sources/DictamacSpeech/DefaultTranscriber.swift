@@ -175,19 +175,20 @@ public final class DefaultTranscriber: Transcriber {
                 try await installRequest.downloadAndInstall()
             }
         case .unsupported:
-            // The host doesn't ship a model for this locale. Surface a
-            // distinct error so callers can map it (#15 will give this
-            // its own DictamacError case + exit code 67).
-            throw DictamacError.audioDecodeFailed(
-                URL(fileURLWithPath: "/dev/null"),
-                underlying: SpeechSetupError.localeUnsupported(locale.identifier)
+            // The host doesn't ship a model for this locale. Surface as
+            // `speechAnalyzerUnavailable` (exit code 67, PLAN.md §4) so
+            // callers can react correctly — this is a model-availability
+            // failure, not an audio-decode failure (exit 65), and the
+            // file URL is irrelevant to the diagnosis.
+            throw DictamacError.speechAnalyzerUnavailable(
+                reason: "Locale \(locale.identifier) is not supported on this device"
             )
         @unknown default:
             // A future Status case appears — treat conservatively as
-            // unsupported rather than blocking on an unknown state.
-            throw DictamacError.audioDecodeFailed(
-                URL(fileURLWithPath: "/dev/null"),
-                underlying: SpeechSetupError.localeUnsupported(locale.identifier)
+            // unavailable rather than blocking on an unknown state.
+            // Same exit-code-67 mapping as the `.unsupported` arm.
+            throw DictamacError.speechAnalyzerUnavailable(
+                reason: "Unknown locale model installation status for \(locale.identifier)"
             )
         }
 
@@ -297,23 +298,4 @@ public final class DefaultTranscriber: Transcriber {
         }
         return 0
     }
-}
-
-/// Marker errors emitted by the SpeechAnalyzer bootstrap path.
-///
-/// Lives here (not in `DictamacCore`) because the locale-model bootstrap
-/// is a `DictamacSpeech` concern; once #15 lands, the `localeUnsupported`
-/// case gets its own `DictamacError` case + exit code 67, and this
-/// marker disappears.
-public enum SpeechSetupError: Error, LocalizedError, CustomStringConvertible {
-    case localeUnsupported(String)
-
-    public var description: String {
-        switch self {
-        case .localeUnsupported(let identifier):
-            return "SpeechAnalyzer reports no on-device model available for locale '\(identifier)' (see issue #15)"
-        }
-    }
-
-    public var errorDescription: String? { description }
 }
