@@ -3,16 +3,15 @@
 # pre-push hook - Validates test attestation and runs tests before push
 #
 # Features:
-# - Checks for test attestation in commit messages
-# - Runs project tests before allowing push
-# - Interactive prompt when attestation missing (defaults to abort)
-# - Skips checks for main branch (CI handles it)
+# - Checks for the test attestation token on EVERY pushed commit
+# - Runs the project's test suite before allowing push
+# - Interactive prompt (reads from /dev/tty) when attestation is missing
+# - Skips checks for main/master (CI handles those branches)
+# - Detect-and-FAIL when no test runner is found (we never want a silent
+#   "tests skipped" outcome)
 #
-# Test Attestation Format:
-#   [tests-passed: X tests in Ys]
-#   [backend-tests-passed: X tests in Ys]
-#   [web-tests-passed: X tests in Ys]
-#   [ios-tests-passed: X tests in Ys]
+# Test Attestation Format (project-specific, see CLAUDE.md):
+#   [dictamac-tests-passed: X tests in Ys]
 #
 # Installation:
 #   mkdir -p .githooks
@@ -28,6 +27,10 @@
 # Customize this for your project (auto-detected if not set)
 TEST_COMMAND=""
 
+# The attestation token contributors must include in commit messages.
+# Keep this in sync with CLAUDE.md and .githooks/pre-push docs.
+ATTESTATION_TOKEN="dictamac-tests-passed"
+
 # Detect test command if not configured
 detect_test_command() {
     if [ -n "$TEST_COMMAND" ]; then
@@ -35,8 +38,12 @@ detect_test_command() {
         return
     fi
 
-    # Check for common test runners
-    if [ -f "package.json" ]; then
+    # Check for common test runners (Makefile preferred for this repo)
+    if [ -f "Makefile" ] && grep -q "^test:" Makefile; then
+        echo "make test"
+    elif [ -f "Package.swift" ]; then
+        echo "swift test"
+    elif [ -f "package.json" ]; then
         if command -v pnpm &> /dev/null && [ -f "pnpm-lock.yaml" ]; then
             echo "pnpm test"
         elif command -v yarn &> /dev/null && [ -f "yarn.lock" ]; then
@@ -50,8 +57,6 @@ detect_test_command() {
         echo "cargo test"
     elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
         echo "pytest"
-    elif [ -f "Makefile" ] && grep -q "^test:" Makefile; then
-        echo "make test"
     else
         echo ""
     fi
@@ -60,6 +65,8 @@ detect_test_command() {
 # === MAIN LOGIC ===
 
 set -e
+
+ZERO_SHA="0000000000000000000000000000000000000000"
 
 # Get current branch
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -70,16 +77,22 @@ if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
     exit 0
 fi
 
-# Read stdin for push info (required for pre-push hooks)
+# Read stdin for push info (required for pre-push hooks).
+# Git uses fd 0 to stream ref updates here, so we deliberately read user
+# input below from /dev/tty rather than fd 0.
+ANY_PUSH_ACTIVE=0
+
 while read local_ref local_sha remote_ref remote_sha; do
     # Skip if deleting a branch
-    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
         continue
     fi
 
+    ANY_PUSH_ACTIVE=1
+
     # Determine the range of commits being pushed
-    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        # New branch - check all commits from merge-base with main/master
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        # New branch / initial push - compare against merge-base with main/master
         if git show-ref --verify --quiet refs/heads/main; then
             BASE_BRANCH="main"
         else
@@ -87,64 +100,81 @@ while read local_ref local_sha remote_ref remote_sha; do
         fi
         MERGE_BASE=$(git merge-base "$BASE_BRANCH" "$local_sha" 2>/dev/null || echo "")
         if [ -n "$MERGE_BASE" ]; then
-            RANGE="$MERGE_BASE..$local_sha"
+            COMMIT_LIST=$(git rev-list "$MERGE_BASE..$local_sha")
         else
-            RANGE="$local_sha"
+            # No merge base (truly orphan history) - check only the tip
+            COMMIT_LIST=$(git rev-list -1 "$local_sha")
         fi
     else
         # Existing branch - check commits since last push
-        RANGE="$remote_sha..$local_sha"
+        COMMIT_LIST=$(git rev-list "$remote_sha..$local_sha")
     fi
 
-    # Get commit messages for the range
-    COMMIT_MESSAGES=$(git log --format=%B "$RANGE" 2>/dev/null || git log --format=%B -1 "$local_sha")
+    # Iterate every commit in the range; collect ones missing attestation.
+    MISSING=()
+    for sha in $COMMIT_LIST; do
+        if ! git log -1 --format=%B "$sha" | grep -q "${ATTESTATION_TOKEN}:"; then
+            MISSING+=("$sha")
+        fi
+    done
 
-    # Check for any test attestation pattern
-    if echo "$COMMIT_MESSAGES" | grep -qE '\[.*tests?-passed:'; then
-        echo "✓ Test attestation found in commit messages"
+    if [ "${#MISSING[@]}" -eq 0 ]; then
+        echo "✓ Test attestation present on every commit being pushed"
     else
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "WARNING: No test attestation found in commit messages"
+        echo "WARNING: ${#MISSING[@]} commit(s) missing test attestation"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
+        echo "Commits missing the [${ATTESTATION_TOKEN}: ...] trailer:"
+        for sha in "${MISSING[@]}"; do
+            short=$(git log -1 --format='%h %s' "$sha")
+            echo "  - $short"
+        done
+        echo ""
         echo "Expected format in commit message:"
-        echo "  [tests-passed: X tests in Ys]"
+        echo "  [${ATTESTATION_TOKEN}: X tests in Ys]"
         echo ""
-        echo "Or for specific components:"
-        echo "  [backend-tests-passed: X tests in Ys]"
-        echo "  [web-tests-passed: X tests in Ys]"
-        echo "  [ios-tests-passed: X tests in Ys]"
-        echo ""
-        echo "RECOMMENDED: Run tests and amend your commit:"
-        echo "  <run your tests>"
-        echo "  git commit --amend"
+        echo "RECOMMENDED: Run tests and amend (or fix-up) each commit:"
+        echo "  make test"
+        echo "  git rebase -i <range>  # add the trailer to each commit"
         echo ""
 
-        # Interactive prompt (only works in terminal)
-        if [ -t 0 ]; then
-            read -p "Push anyway without attestation? [y/N] " -n 1 -r </dev/tty
-            echo ""
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "Push aborted. Run tests and amend your commit with attestation."
+        # Interactive prompt - Git's pre-push hook has fd 0 bound to the
+        # ref-update stream, so check /dev/tty directly.
+        if [ -t 1 ] && [ -e /dev/tty ]; then
+            printf "Push anyway without attestation on every commit? [y/N] " > /dev/tty
+            read response < /dev/tty
+            if [[ ! "$response" =~ ^[Yy]$ ]]; then
+                echo "Push aborted. Add [${ATTESTATION_TOKEN}: ...] to each commit."
                 exit 1
             fi
             echo "Proceeding without attestation (CI will still run tests)..."
         else
-            echo "Non-interactive mode: Push aborted. Add test attestation to commit."
+            echo "Non-interactive mode: Push aborted. Add the [${ATTESTATION_TOKEN}: ...] trailer to each commit."
             exit 1
         fi
     fi
 done
+
+# If git fed us nothing (e.g. delete-only push), there's nothing to test.
+if [ "$ANY_PUSH_ACTIVE" -eq 0 ]; then
+    exit 0
+fi
 
 # Run tests before push
 TEST_CMD=$(detect_test_command)
 
 if [ -z "$TEST_CMD" ]; then
     echo ""
-    echo "⚠ No test runner detected, skipping local tests"
-    echo "  Configure TEST_COMMAND in .githooks/pre-push if needed"
-    exit 0
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "ERROR: No test runner detected"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "The pre-push hook refuses to push without running tests."
+    echo "Either add a Makefile target named 'test', a Package.swift, or"
+    echo "configure TEST_COMMAND at the top of .githooks/pre-push."
+    exit 1
 fi
 
 echo ""

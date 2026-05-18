@@ -52,11 +52,31 @@ echo ""
 echo "Auto-reverting to main branch..."
 echo ""
 
-# Revert to main (or master if that's the default)
+# Revert to main (or master if that's the default).
+# If the checkout itself fails, the main worktree is still parked on the
+# blocked branch — exactly the state this hook is meant to prevent. Fail
+# loudly so the human can intervene rather than exiting silently.
 if git show-ref --verify --quiet refs/heads/main; then
-    git checkout main
+    DEFAULT_BRANCH="main"
 else
-    git checkout master
+    DEFAULT_BRANCH="master"
+fi
+
+if ! git checkout "$DEFAULT_BRANCH" 2>/dev/null; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "ERROR: hook tried to auto-revert main worktree to '$DEFAULT_BRANCH' but checkout failed."
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Your main worktree is still on '$BRANCH', which should not be"
+    echo "checked out here. Most likely cause: uncommitted changes or a"
+    echo "conflict prevented the checkout."
+    echo ""
+    echo "Fix manually:"
+    echo "  git -C $(pwd) status"
+    echo "  git -C $(pwd) checkout $DEFAULT_BRANCH"
+    echo ""
+    exit 1
 fi
 
 exit 1
