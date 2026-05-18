@@ -1,6 +1,6 @@
 # Read CloudRecordings.db SQLite metadata
 
-PR: TBD
+PR: #48
 Issues: Closes #17 (Refs #4)
 
 ## What changed
@@ -17,16 +17,16 @@ Three new files in `Sources/DictamacVoiceMemos/`:
   `ZCLOUDRECORDING` table by column name. Closes the handle via
   `defer` inside `recordings()` so each call is self-contained.
 - `CloudRecordingsError.swift` — typed error enum with
-  `sqliteUnavailable`, `sqliteOpenFailed`, `schemaUnrecognized`. These
-  are caller-facing signals for the resolver to choose when to fall
-  back to the filesystem scanner — deliberately NOT `DictamacError`
-  cases (the resolver wraps these only if the filesystem path also
-  fails).
+  `sqliteUnavailable`, `sqliteOperationFailed(operation:code:reason:)`,
+  `schemaUnrecognized`. These are caller-facing signals for the
+  resolver to choose when to fall back to the filesystem scanner —
+  deliberately NOT `DictamacError` cases (the resolver wraps these
+  only if the filesystem path also fails).
 
-Six Swift Testing cases in
-`Tests/DictamacVoiceMemosTests/CloudRecordingsReaderTests.swift`:
+15 Swift Testing cases in
+`Tests/DictamacVoiceMemosTests/CloudRecordingsReaderTests.swift` cover:
 
-- happy path: 3 synthetic rows round-trip through `recordings()` with
+- happy path: synthetic rows round-trip through `recordings()` with
   correct identifier, title, `recordedAt`, `durationSeconds`,
   `assetPath`
 - missing file → `.sqliteUnavailable`
@@ -35,6 +35,10 @@ Six Swift Testing cases in
 - table renamed (`ZCLOUDRECORDING` → `ZRECORDING`) →
   `.schemaUnrecognized`
 - error descriptions render the underlying reason verbatim
+- relative vs absolute ZPATH resolution against the library URL
+- skip behavior for rows with NULL/empty ZPATH, NULL ZDATE, NULL ZDURATION
+- title fallback to filename stem when ZCUSTOMLABEL is NULL or empty
+- garbage bytes at the database path surface as `sqliteOperationFailed`
 
 Fixtures are synthesized at test time using `libsqlite3` directly
 rather than committing a binary `.db` — this keeps the fixture builder
