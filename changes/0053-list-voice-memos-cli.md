@@ -1,6 +1,6 @@
 # Add --list-voice-memos CLI mode with shared schema
 
-PR: TBD
+PR: #53
 Issues: Closes #25 (Refs #4)
 
 ## What changed

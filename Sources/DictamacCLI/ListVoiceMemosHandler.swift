@@ -96,7 +96,21 @@ public func runListVoiceMemos(
     // 5. Render + write.
     let rendered: String
     if wantsJSON {
-        rendered = renderJSON(sorted)
+        do {
+            rendered = try renderJSON(sorted)
+        } catch {
+            // JSON encoding of `[VoiceMemoListing]` is expected to be
+            // total because every field is JSON-native; in practice
+            // only pathological metadata (e.g. a non-finite Double in
+            // `durationSeconds`) can make `JSONEncoder` throw. When it
+            // does, surface a real internal failure rather than
+            // lying to the caller with `[]` — stdout stays empty,
+            // stderr gets the structured error line, exit 1.
+            let wrapped = DictamacError.internalFailure(error)
+            writeStderr(wrapped.formattedStderrLine)
+            exit(wrapped.exitCode)
+            return
+        }
     } else {
         rendered = renderPlaintext(sorted)
     }
@@ -143,30 +157,35 @@ private func renderPlaintext(_ memos: [VoiceMemoMetadata]) -> String {
 /// JSON array of ``VoiceMemoListing`` matching the MCP
 /// `list_voice_memos` schema. Sorted keys + ISO8601 dates so
 /// snapshot-style assertions stay stable across encoder upgrades.
-private func renderJSON(_ memos: [VoiceMemoMetadata]) -> String {
+///
+/// Throws when the encoder rejects the payload. Previously this
+/// helper swallowed encoder failures and returned `"[]\n"`, which
+/// quietly lied to callers ("zero memos") about a real internal
+/// fault. The handler now treats the throw as
+/// ``DictamacError/internalFailure(_:)`` and exits 1 instead.
+private func renderJSON(_ memos: [VoiceMemoMetadata]) throws -> String {
     let listings = memos.map(VoiceMemoListing.init(from:))
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys]
-    do {
-        let data = try encoder.encode(listings)
-        let body = String(data: data, encoding: .utf8) ?? "[]"
-        return body + "\n"
-    } catch {
-        // JSON encoding of [VoiceMemoListing] cannot realistically
-        // fail — all fields are JSON-native. Surface as an empty
-        // array rather than crashing so the stdout contract is
-        // preserved even in pathological encoder edge cases.
-        return "[]\n"
-    }
+    let data = try encoder.encode(listings)
+    let body = String(data: data, encoding: .utf8) ?? "[]"
+    return body + "\n"
 }
 
 /// Formats duration as a `%.3f` string trimmed of trailing zeros so
 /// integers render as `60` and fractional values as `60.5`. Keeps the
 /// plaintext column compact for agents piping through `awk`.
-private func formatDuration(_ seconds: TimeInterval) -> String {
+///
+/// Locale-pinned to POSIX (`en_US_POSIX`) so the decimal separator is
+/// always `.` regardless of the user's system locale. Without an
+/// explicit locale, `String(format:)` on a `de_DE` / `fr_FR` host emits
+/// a comma decimal separator, which breaks the tab-separated machine-
+/// parseable plaintext contract (PLAN.md §4 — `awk -F'\t'` consumers
+/// would see `60,5` and either truncate or fail downstream parsing).
+internal func formatDuration(_ seconds: TimeInterval) -> String {
     // Use a fixed format then strip trailing zeros / trailing dot.
-    let formatted = String(format: "%.3f", seconds)
+    let formatted = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), seconds)
     var result = formatted
     while result.contains(".") && (result.hasSuffix("0") || result.hasSuffix(".")) {
         let last = result.removeLast()

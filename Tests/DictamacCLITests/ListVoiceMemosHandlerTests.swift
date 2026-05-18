@@ -343,6 +343,113 @@ struct ListVoiceMemosHandlerTests {
         #expect(recorder.stdoutText.isEmpty)
     }
 
+    // MARK: - Locale-sensitive duration formatting
+
+    /// `formatDuration` must always emit a `.` decimal separator
+    /// regardless of the user's process locale. Without an explicit
+    /// POSIX locale, `String(format: "%.3f", ...)` on a `de_DE` host
+    /// emits a comma decimal separator (`60,5` instead of `60.5`),
+    /// which silently breaks the tab-separated, machine-parseable
+    /// plaintext contract — downstream `awk -F'\t'` consumers would
+    /// then parse `60,5` as a string instead of a number.
+    ///
+    /// We can't reliably swap the process locale at test time, but the
+    /// formatter is now POSIX-pinned internally, so the output is the
+    /// same whether the host is `en_US`, `de_DE`, or `fr_FR`. The
+    /// assertion below proves the fix: a fractional value renders with
+    /// a dot, never a comma. The accompanying construction of a
+    /// `de_DE` `Locale` documents what was previously broken — a
+    /// future regression that drops the locale argument would still
+    /// pass on a US host but fail anywhere `,` is the decimal
+    /// separator, and this test (paired with the doc comment on
+    /// ``formatDuration(_:)``) is the breadcrumb that traces the
+    /// failure back to the missing locale.
+    @Test func formatDurationUsesPOSIXDecimalSeparatorRegardlessOfLocale() {
+        // Documenting intent: even when a de_DE-style locale is
+        // active, `formatDuration` must yield a dot. The formatter is
+        // pinned to en_US_POSIX internally, so this assertion holds
+        // on every host.
+        _ = Locale(identifier: "de_DE")
+
+        let fractional = formatDuration(60.5)
+        #expect(fractional == "60.5",
+                "expected dot decimal separator; got \(fractional)")
+        #expect(!fractional.contains(","),
+                "duration must never contain a comma — breaks tab-separated output")
+
+        let integer = formatDuration(60.0)
+        #expect(integer == "60", "expected trailing .000 stripped; got \(integer)")
+        #expect(!integer.contains(","))
+
+        let small = formatDuration(0.001)
+        #expect(small == "0.001")
+        #expect(!small.contains(","))
+    }
+
+    @Test func plaintextDurationColumnContainsDotNotComma() async {
+        let now = Date(timeIntervalSince1970: 1_715_000_000)
+        let listings = [
+            metadata(id: "frac", recordedAt: now, duration: 60.5),
+        ]
+        let resolver = MockVoiceMemosResolver(listings: listings)
+        let recorder = OutputRecorder()
+
+        await runListVoiceMemosForTest(
+            since: nil,
+            limit: nil,
+            resolver: resolver,
+            now: now,
+            wantsJSON: false,
+            recorder: recorder
+        )
+
+        let stdout = recorder.stdoutText
+        #expect(stdout.contains("60.5"),
+                "expected dot decimal separator in plaintext duration column; got \(stdout)")
+        #expect(!stdout.contains("60,5"),
+                "comma decimal separator would break tab-separated plaintext contract")
+    }
+
+    // MARK: - JSON encoding failure surfaces as internalFailure
+
+    /// When `JSONEncoder` rejects the payload, the handler must NOT
+    /// silently emit `"[]\n"` on stdout. That would lie to callers
+    /// (zero memos) about a real internal fault. Instead, stdout stays
+    /// empty, a structured ``DictamacError/internalFailure(_:)`` line
+    /// is written to stderr, and the process exits 1.
+    ///
+    /// We force the encoder to throw by feeding the resolver a
+    /// metadata row whose `durationSeconds` is `.nan`. The default
+    /// `JSONEncoder.nonConformingFloatEncodingStrategy = .throw`
+    /// makes `Double.nan` un-encodable, which is the cheapest way to
+    /// reproduce a real encoder failure without subclassing.
+    @Test func jsonEncodingFailureExitsOneWithEmptyStdout() async {
+        let now = Date(timeIntervalSince1970: 1_715_000_000)
+        let listings = [
+            metadata(id: "broken", recordedAt: now, duration: .nan),
+        ]
+        let resolver = MockVoiceMemosResolver(listings: listings)
+        let recorder = OutputRecorder()
+
+        await runListVoiceMemosForTest(
+            since: nil,
+            limit: nil,
+            resolver: resolver,
+            now: now,
+            wantsJSON: true,
+            recorder: recorder
+        )
+
+        let exitCodes = recorder.exitCodes
+        #expect(exitCodes == [1], "expected exit 1 on JSON encoding failure; got \(exitCodes)")
+        #expect(recorder.stdoutText.isEmpty,
+                "stdout must stay empty on encoding failure; got \(recorder.stdoutText)")
+        let stderr = recorder.stderrText
+        #expect(!stderr.isEmpty, "stderr must carry the internal-failure message")
+        #expect(stderr.contains("Internal failure"),
+                "stderr should surface the DictamacError.internalFailure description; got \(stderr)")
+    }
+
     // MARK: - Test helpers
 
     private func metadata(
