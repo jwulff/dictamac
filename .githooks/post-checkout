@@ -62,7 +62,7 @@ else
     DEFAULT_BRANCH="master"
 fi
 
-if ! git checkout "$DEFAULT_BRANCH" 2>/dev/null; then
+if ! git checkout "$DEFAULT_BRANCH"; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "ERROR: hook tried to auto-revert main worktree to '$DEFAULT_BRANCH' but checkout failed."
@@ -70,11 +70,11 @@ if ! git checkout "$DEFAULT_BRANCH" 2>/dev/null; then
     echo ""
     echo "Your main worktree is still on '$BRANCH', which should not be"
     echo "checked out here. Most likely cause: uncommitted changes or a"
-    echo "conflict prevented the checkout."
+    echo "conflict prevented the checkout (see git's error above)."
     echo ""
     echo "Fix manually:"
-    echo "  git -C $(pwd) status"
-    echo "  git -C $(pwd) checkout $DEFAULT_BRANCH"
+    echo "  git status"
+    echo "  git checkout $DEFAULT_BRANCH"
     echo ""
     exit 1
 fi

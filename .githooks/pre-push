@@ -121,7 +121,7 @@ while read local_ref local_sha remote_ref remote_sha; do
     # Iterate every commit in the range; collect ones missing attestation.
     MISSING=()
     for sha in $COMMIT_LIST; do
-        if ! git log -1 --format=%B "$sha" | grep -q "${ATTESTATION_TOKEN}:"; then
+        if ! git log -1 --format=%B "$sha" | grep -qE "^\[${ATTESTATION_TOKEN}:"; then
             MISSING+=("$sha")
         fi
     done
