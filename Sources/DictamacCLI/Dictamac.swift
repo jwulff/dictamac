@@ -35,7 +35,13 @@ public struct Dictamac: ParsableCommand {
         stderr; the stdout channel is reserved for transcript content
         so the output is safely pipeable.
         """,
-        version: "0.0.0-dev"
+        // Read from the embedded Info.plist via `DictamacVersion.current`
+        // so the CLI's `--version` output, the MCP `initialize`
+        // response's `serverInfo.version`, and the bundle's
+        // `CFBundleShortVersionString` cannot drift apart. See
+        // `Sources/DictamacCore/DictamacVersion.swift` for the lookup
+        // contract and test-bundle fallback.
+        version: DictamacVersion.current
     )
 
     // MARK: - Positional input

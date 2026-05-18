@@ -2,6 +2,7 @@ import Testing
 import ArgumentParser
 import Foundation
 @testable import DictamacCLI
+@testable import DictamacCore
 
 /// Pure argument-parser tests: assert that argv strings produce the right
 /// `Dictamac` value (or the right error) WITHOUT actually running
@@ -252,11 +253,14 @@ struct DictamacParsingTests {
     // MARK: - --version short-circuits
 
     @Test func versionStringMatchesConfiguration() {
-        // The version string is the source of truth for `--version`
-        // output and the `dictamac --version` integration test in the
-        // PR description. Pin its value here so a bump shows up in
-        // code review.
-        #expect(Dictamac.configuration.version == "0.0.0-dev")
+        // The version string is sourced from `DictamacVersion.current`,
+        // which reads `CFBundleShortVersionString` from the embedded
+        // Info.plist at runtime. Asserting equality against
+        // `DictamacVersion.current` (rather than a hardcoded literal)
+        // keeps this test future-proof across version bumps — bumping
+        // `Resources/Info.plist` is the only edit required.
+        #expect(Dictamac.configuration.version == DictamacVersion.current)
+        #expect(!Dictamac.configuration.version.isEmpty)
     }
 
     @Test func versionFlagIsRecognizedByParser() {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import DictamacMCP
+@testable import DictamacCore
 
 /// Tests for the MCP `initialize` handler — the first method any
 /// client calls in the handshake.
@@ -70,7 +71,11 @@ struct InitializeHandlerTests {
             return
         }
         #expect(serverInfo["name"] == .string("dictamac"))
-        #expect(serverInfo["version"] == .string("0.0.0-dev"))
+        // Version comes from the embedded Info.plist via
+        // `DictamacVersion.current`; asserting against the constant
+        // (rather than a literal) keeps this test future-proof across
+        // version bumps. See `Sources/DictamacCore/DictamacVersion.swift`.
+        #expect(serverInfo["version"] == .string(DictamacVersion.current))
         #expect(serverInfo["vendor"] == .string("jwulff"))
     }
 
@@ -148,7 +153,7 @@ struct InitializeHandlerTests {
         #expect(result["capabilities"] == .object(["tools": .object([:])]))
         #expect(result["serverInfo"] == .object([
             "name": .string("dictamac"),
-            "version": .string("0.0.0-dev"),
+            "version": .string(DictamacVersion.current),
             "vendor": .string("jwulff"),
         ]))
     }
