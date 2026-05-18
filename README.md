@@ -53,19 +53,7 @@ Apple's Voice Memos app transcribes recordings only when it feels like it — th
 
 ## Install
 
-### Homebrew (recommended)
-
-```bash
-brew install jwulff/tap/dictamac
-```
-
-This builds dictamac from source via the formula at
-[jwulff/homebrew-tap](https://github.com/jwulff/homebrew-tap). No bottled
-(pre-built) artifact yet — the first install on a fresh machine compiles
-the Swift sources, which takes about a minute on Apple Silicon. See
-[Requirements](#requirements) below for what must be on the machine.
-
-### From source
+### From source (recommended for now)
 
 ```bash
 git clone https://github.com/jwulff/dictamac.git
@@ -80,9 +68,24 @@ make install PREFIX=/usr/local   # or override the prefix
 codesign step and the resulting binary will `SIGTRAP` on first
 SpeechAnalyzer touch.
 
+### Homebrew (coming soon)
+
+Once the `jwulff/homebrew-tap` repo is published with the v0.1.0 formula,
+the recommended install will be:
+
+```bash
+brew install jwulff/tap/dictamac
+```
+
+This is **not yet available** — the tap repo and v0.1.0 release tag are
+post-merge user actions tracked in
+[#9](https://github.com/jwulff/dictamac/issues/9). Until then, use the
+from-source path above.
+
 A sample Homebrew formula lives at
-[`Formula/dictamac.rb`](Formula/dictamac.rb) for reference and
-contribution; the canonical, brew-installable copy lives in the tap repo.
+[`Formula/dictamac.rb`](Formula/dictamac.rb) so the formula can be
+reviewed alongside the code it builds; the canonical, brew-installable
+copy will live in the tap repo once it's published.
 
 ## Requirements
 

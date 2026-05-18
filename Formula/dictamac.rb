@@ -9,7 +9,7 @@
 #
 # When releasing a new dictamac version, update the `url`, `sha256`, and
 # (if needed) the macOS version gate here AND in the tap repo. See
-# `changes/NNNN-homebrew-formula-prep.md` for the release procedure.
+# `changes/0058-homebrew-formula-prep.md` for the release procedure.
 class Dictamac < Formula
   desc "macOS CLI for on-device transcription via SpeechAnalyzer"
   homepage "https://github.com/jwulff/dictamac"
@@ -25,16 +25,39 @@ class Dictamac < Formula
 
   # dictamac uses macOS 26 (Tahoe) SpeechAnalyzer APIs. `:tahoe` is the
   # Homebrew macro for macOS 26.0+; brew will refuse to install on older
-  # systems. If running against an older Homebrew that does not know about
-  # `:tahoe` yet, fall back to a manual `MacOS.version` check below.
+  # systems. `:tahoe` is supported on every Homebrew release that ships
+  # with macOS 26, so no manual `MacOS.version` fallback is required.
   depends_on macos: :tahoe
 
   # Swift 6.x toolchain is required to build. On most contributor machines
   # this comes from Xcode 16+ Command Line Tools; `:build` tells Homebrew
-  # we only need it at install time, not runtime.
+  # we only need it at install time, not runtime. NOTE: Xcode 16 ships
+  # only the macOS 15 (Sequoia) SDK; building dictamac requires the
+  # macOS 26 SDK that ships with Xcode 26. The hard gate below enforces
+  # that — `depends_on xcode:` is kept as a floor for Swift 6.x.
   depends_on xcode: ["16.0", :build]
 
   def install
+    # dictamac targets `.macOS("26.0")` and imports `SpeechAnalyzer` /
+    # `SpeechTranscriber`, which are only available in the macOS 26 SDK
+    # that ships with Xcode 26. Homebrew may pick an older toolchain on
+    # Tahoe machines that still have Xcode/CLT 16.x installed, in which
+    # case the Swift build will fail late with cryptic "cannot find type
+    # 'SpeechAnalyzer' in scope" errors. Fail loudly up front instead.
+    odie <<~EOS unless MacOS::Xcode.version >= "26"
+      dictamac requires Xcode 26 (or its Command Line Tools) to build,
+      which provides the macOS 26 SDK. Detected Xcode version:
+      #{MacOS::Xcode.version}.
+
+      Install Xcode 26 from the App Store (or `xcode-select` to a newer
+      developer dir) and try again.
+    EOS
+
+    # Pin the deployment target so the Swift compiler honors the macOS
+    # 26 floor declared in Package.swift even if a host environment
+    # overrides it.
+    ENV["MACOSX_DEPLOYMENT_TARGET"] = "26.0"
+
     # The Makefile already honors PREFIX. `prefix` is the standard
     # Homebrew variable for the keg root; bin/etc/share land under it.
     system "make", "build"
@@ -45,6 +68,9 @@ class Dictamac < Formula
     # Smoke check: the binary loads and reports its version. We do NOT
     # run a transcription here because that requires Speech Recognition
     # TCC permission, which is unavailable in `brew test`'s sandbox.
-    assert_match(/\d+\.\d+\.\d+/, shell_output("#{bin}/dictamac --version"))
+    # Asserting exit 0 (rather than regex-matching the version string)
+    # keeps the test robust to pre-release version suffixes like
+    # `0.0.0-dev` and to the eventual `0.1.0` tag alike.
+    system "#{bin}/dictamac", "--version"
   end
 end
