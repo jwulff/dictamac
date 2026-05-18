@@ -17,9 +17,6 @@ public enum StubMessages {
         "--voice-memo \"\(query)\" not yet implemented — see epic #4."
     }
 
-    public static let listVoiceMemosNotImplemented =
-        "--list-voice-memos not yet implemented — see epic #4."
-
     /// MCP transport epic.
     public static let mcpNotImplemented =
         "--mcp stdio server not yet implemented — see epic #5."

@@ -9,16 +9,11 @@ import Foundation
 /// touching the real `FileHandle.standardError` or process exit.
 struct StubHandlerTests {
 
-    // MARK: - voice-memo / list-voice-memos point at epic #4
+    // MARK: - voice-memo points at epic #4
 
     @Test func voiceMemoStubMessageMentionsEpic4() {
         let message = StubMessages.voiceMemoNotImplemented(query: "standup")
         #expect(message.contains("standup"))
-        #expect(message.contains("#4"))
-    }
-
-    @Test func listVoiceMemosStubMessageMentionsEpic4() {
-        let message = StubMessages.listVoiceMemosNotImplemented
         #expect(message.contains("#4"))
     }
 

@@ -83,6 +83,7 @@ let package = Package(
             dependencies: [
                 "DictamacCLI",
                 "DictamacCore",
+                "DictamacVoiceMemos",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
