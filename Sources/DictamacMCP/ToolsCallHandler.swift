@@ -1,5 +1,6 @@
 import Foundation
 import DictamacCore
+import DictamacVoiceMemos
 
 /// MCP `tools/call` handler.
 ///
@@ -38,16 +39,20 @@ public struct MCPToolsCallHandler: Sendable {
 
     private let transcriber: any Transcriber
     private let audioResolver: any AudioFileResolver
+    private let voiceMemosResolver: any VoiceMemosResolver
 
-    /// Construct a handler bound to a specific ``Transcriber`` +
-    /// ``AudioFileResolver``. Tests inject mocks; production wires the
-    /// `Default*` implementations.
+    /// Construct a handler bound to a specific ``Transcriber``,
+    /// ``AudioFileResolver``, and ``VoiceMemosResolver``. Tests inject
+    /// mocks; production wires the `Default*` implementations through
+    /// ``ProductionMCPHandlers/register(on:transcriber:audioResolver:voiceMemosResolver:)``.
     public init(
         transcriber: any Transcriber,
-        audioResolver: any AudioFileResolver
+        audioResolver: any AudioFileResolver,
+        voiceMemosResolver: any VoiceMemosResolver
     ) {
         self.transcriber = transcriber
         self.audioResolver = audioResolver
+        self.voiceMemosResolver = voiceMemosResolver
     }
 
     // MARK: - Entry point
@@ -90,9 +95,10 @@ public struct MCPToolsCallHandler: Sendable {
 
     // MARK: - transcribe_file
 
-    /// `transcribe_file({path, locale?, format?})`. The only fully-wired
-    /// tool in this PR (#26); the two Voice-Memos tools are stubs that
-    /// land in the follow-up (#50).
+    /// `transcribe_file({path, locale?, format?})`. Validates the
+    /// supplied path, hands it through the shared
+    /// ``AudioFileResolver`` + ``Transcriber``, and renders the result
+    /// into the MCP single-text-content envelope (PLAN.md §5).
     private func handleTranscribeFile(arguments: [String: JSONValue]) async throws -> JSONValue {
         // Validate required `path`. Missing / wrong type / non-absolute
         // -> JSON-RPC -32602 (malformed invocation).
@@ -145,10 +151,13 @@ public struct MCPToolsCallHandler: Sendable {
         }
     }
 
-    // MARK: - transcribe_voice_memo (stub)
+    // MARK: - transcribe_voice_memo
 
-    /// `transcribe_voice_memo({query, locale?, format?})` — stub pending
-    /// the Voice Memos resolver. See issue #50 for the wiring work.
+    /// `transcribe_voice_memo({query, locale?, format?})` — resolves
+    /// the query via the shared ``VoiceMemosResolver``, then runs the
+    /// same `transcribe_file`-style pipeline against the resolved memo's
+    /// asset path. Result envelope shape and parity-with-CLI rules are
+    /// identical to ``handleTranscribeFile(arguments:)`` (PLAN.md §5).
     private func handleTranscribeVoiceMemo(arguments: [String: JSONValue]) async throws -> JSONValue {
         guard let queryValue = arguments["query"] else {
             throw MCPProtocolError.invalidParams(
@@ -166,42 +175,151 @@ public struct MCPToolsCallHandler: Sendable {
             )
         }
 
-        // Validate `locale` and `format` types up-front so callers get
-        // the same -32602 feedback they would once wiring lands, but
-        // the values are otherwise dropped.
-        _ = try Self.extractLocale(from: arguments)
-        _ = try Self.extractFormat(from: arguments)
+        let format = try Self.extractFormat(from: arguments)
+        let localeIdentifier = try Self.extractLocale(from: arguments)
+            ?? "en-US"
 
-        return Self.toolErrorEnvelope(Self.voiceMemoStubMessage)
+        // From here on, any DictamacError becomes a tool-level error
+        // envelope — never a JSON-RPC error — so the agent sees a
+        // structured failure message identical to the CLI's stderr line.
+        do {
+            // 1. Resolve the query to a specific memo. The resolver
+            // produces ``DictamacError/voiceMemoNotFound``,
+            // ``DictamacError/voiceMemoLibraryMissing``, or
+            // ``DictamacError/permissionDenied`` — all of which fall
+            // out as `isError: true` envelopes below.
+            let parsedQuery = VoiceMemoQuery.parse(query)
+            let memo = try voiceMemosResolver.resolve(
+                parsedQuery,
+                now: Date()
+            )
+
+            // 2. Hand the memo's asset path through the same audio
+            // resolver `transcribe_file` uses. This keeps the codec /
+            // decode validation (exit 65 in the CLI; the equivalent
+            // error envelope here) in one place.
+            let resolved = try await audioResolver.resolve(
+                source: .path(memo.assetPath.path)
+            )
+            defer { resolved.cleanup() }
+
+            let request = TranscriptionRequest(
+                source: .file(resolved.url),
+                locale: Locale(identifier: localeIdentifier),
+                format: format
+            )
+
+            let transcript = try await transcriber.transcribe(request)
+            let rendered = Self.render(transcript: transcript, format: format)
+            return Self.toolSuccessEnvelope(text: rendered)
+        } catch let error as DictamacError {
+            return Self.toolErrorEnvelope(error.mcpToolErrorText)
+        } catch {
+            return Self.toolErrorEnvelope(
+                DictamacError.internalFailure(error).mcpToolErrorText
+            )
+        }
     }
 
-    // MARK: - list_voice_memos (stub)
+    // MARK: - list_voice_memos
 
-    /// `list_voice_memos({since?, limit?})` — stub pending the Voice
-    /// Memos resolver. See issue #50 for the wiring work.
+    /// `list_voice_memos({since?, limit?})` — queries the shared
+    /// ``VoiceMemosResolver`` with defaults `since: "30d"`, `limit: 30`,
+    /// returning a single `text` content item containing a JSON array
+    /// of ``VoiceMemoListing`` (PLAN.md §5).
     private func handleListVoiceMemos(arguments: [String: JSONValue]) async throws -> JSONValue {
-        // Both args are optional with documented defaults; we validate
-        // types here so a malformed invocation surfaces -32602 even
-        // before the real implementation lands.
+        // 1. Validate argument types up-front. Wrong shape -> -32602.
+        // String parsing (`since`) happens after the type guard so an
+        // unrecognized duration also surfaces as -32602 — same boundary
+        // as the CLI's `--since` flag, which exits 2 (argument error).
+        let sinceArgument: String?
         if let sinceValue = arguments["since"] {
-            guard case .string = sinceValue else {
+            guard case .string(let raw) = sinceValue else {
                 throw MCPProtocolError.invalidParams(
                     "list_voice_memos 'since' must be a string when present."
                 )
             }
+            sinceArgument = raw
+        } else {
+            sinceArgument = nil
         }
+
+        let limitArgument: Int?
         if let limitValue = arguments["limit"] {
-            switch limitValue {
-            case .int:
-                break  // expected case
-            default:
+            guard case .int(let raw) = limitValue else {
                 throw MCPProtocolError.invalidParams(
                     "list_voice_memos 'limit' must be an integer when present."
                 )
             }
+            limitArgument = raw
+        } else {
+            limitArgument = nil
         }
 
-        return Self.toolErrorEnvelope(Self.voiceMemoStubMessage)
+        // 2. Parse `since` (default 30d). Bad duration string ->
+        // -32602 to mirror "malformed argument" semantics on the wire.
+        let now = Date()
+        let sinceDate: Date
+        do {
+            let parsed = try DurationString(sinceArgument ?? "30d")
+            sinceDate = parsed.date(relativeTo: now)
+        } catch let error as DurationStringError {
+            throw MCPProtocolError.invalidParams(
+                "list_voice_memos 'since': \(error.description)"
+            )
+        } catch {
+            throw MCPProtocolError.invalidParams(
+                "list_voice_memos 'since': \(error.localizedDescription)"
+            )
+        }
+
+        // 3. Clamp limit to [1, 100]; default 30. Same contract as the
+        // CLI's `--list-voice-memos --limit` flag.
+        let clampedLimit = Self.clamp(
+            limitArgument ?? 30,
+            minimum: 1,
+            maximum: 100
+        )
+
+        // 4. Call the resolver. Any DictamacError -> isError envelope.
+        do {
+            let memos = try voiceMemosResolver.list(
+                since: sinceDate,
+                limit: clampedLimit
+            )
+
+            // 5. Defensive reverse-chronological sort. The resolver is
+            // documented to return reverse-chrono, but we don't trust
+            // silent contract drift to make it past the MCP surface.
+            let sorted = memos.sorted { $0.recordedAt > $1.recordedAt }
+
+            // 6. Encode the projection. ``VoiceMemoListing`` is the
+            // shared wire shape — keeps the CLI's `--list-voice-memos
+            // --json` output and this MCP tool aligned via one type.
+            let listings = sorted.map(VoiceMemoListing.init(from:))
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(listings)
+            let body = String(data: data, encoding: .utf8) ?? "[]"
+            return Self.toolSuccessEnvelope(text: body)
+        } catch let error as DictamacError {
+            return Self.toolErrorEnvelope(error.mcpToolErrorText)
+        } catch {
+            return Self.toolErrorEnvelope(
+                DictamacError.internalFailure(error).mcpToolErrorText
+            )
+        }
+    }
+
+    /// Clamps `value` into `[minimum, maximum]`. Local helper rather
+    /// than an `Int` extension — matches the CLI's
+    /// ``runListVoiceMemos(since:limit:resolver:now:wantsJSON:writeStdout:writeStderr:exit:)``
+    /// implementation so behaviour stays in lockstep.
+    private static func clamp(_ value: Int, minimum: Int, maximum: Int) -> Int {
+        if value < minimum { return minimum }
+        if value > maximum { return maximum }
+        return value
     }
 
     // MARK: - Param extraction helpers
@@ -344,14 +462,6 @@ public struct MCPToolsCallHandler: Sendable {
         ])
     }
 
-    /// Stub message for the two Voice-Memos tools. Both share the same
-    /// text and the same follow-up issue (#50) so the agent gets a
-    /// single, actionable pointer.
-    static let voiceMemoStubMessage: String = (
-        "transcribe_voice_memo / list_voice_memos are not yet wired to "
-        + "the VoiceMemosResolver — see https://github.com/jwulff/dictamac/issues/50 "
-        + "for the follow-up work that lands the wiring."
-    )
 }
 
 // MARK: - DictamacError -> tool-error text (parity seam)

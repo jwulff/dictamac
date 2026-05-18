@@ -126,10 +126,10 @@ public struct ModeHandlers: Sendable {
                 // Build an MCP server bound to the process's standard
                 // handles and register the production handler set.
                 // The `initialize` + `tools/list` handlers came from
-                // #22; #26 adds `tools/call` via the overload that
-                // accepts the shared ``Transcriber`` +
-                // ``AudioFileResolver`` so the MCP transport rides
-                // the same core the CLI does.
+                // #22; #26 added `tools/call` for `transcribe_file`;
+                // #50 wires the two voice-memo tools to the shared
+                // ``VoiceMemosResolver`` via the same overload so the
+                // MCP transport rides the same core the CLI does.
                 //
                 // The server runs to EOF on stdin; once the loop
                 // returns we exit 0 to match the CLI's success
@@ -138,11 +138,18 @@ public struct ModeHandlers: Sendable {
                 // requests) or `isError: true` tool envelopes
                 // (`DictamacError`s) inside the loop, never as
                 // process-exit failures.
+                //
+                // The voice-memos resolver is built via the shared
+                // `voiceMemosResolverFactory` so a test override
+                // (#53's --list-voice-memos handler uses the same
+                // factory) flows through both transports.
                 let server = MCPServer()
+                let voiceMemosResolver = voiceMemosResolverFactory()
                 await ProductionMCPHandlers.register(
                     on: server,
                     transcriber: transcriber,
-                    audioResolver: resolver
+                    audioResolver: resolver,
+                    voiceMemosResolver: voiceMemosResolver
                 )
                 await server.serve()
                 Darwin.exit(0)

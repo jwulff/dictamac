@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import DictamacMCP
 @testable import DictamacCore
+@testable import DictamacVoiceMemos
 
 /// Tests for the MCP `tools/call` dispatcher (#26).
 ///
@@ -20,12 +21,18 @@ struct ToolsCallTests {
     // MARK: - Fixture helpers
 
     /// Build a handler with stub deps that return a canned transcript.
+    ///
+    /// `voiceMemosResolver` defaults to an empty resolver so the
+    /// existing `transcribe_file` / envelope tests don't have to opt
+    /// into the voice-memo wiring; tests that exercise the voice-memo
+    /// tools pass an explicit resolver.
     private func makeHandler(
         transcript: Transcript = TranscriptFixture.canned(),
         transcriberError: (any Error)? = nil,
         resolverError: (any Error)? = nil,
-        resolvedURL: URL = URL(fileURLWithPath: "/tmp/dictamac-test.m4a")
-    ) -> (MCPToolsCallHandler, MockTranscriber, MockAudioFileResolver) {
+        resolvedURL: URL = URL(fileURLWithPath: "/tmp/dictamac-test.m4a"),
+        voiceMemosResolver: MockVoiceMemosResolver = MockVoiceMemosResolver()
+    ) -> (MCPToolsCallHandler, MockTranscriber, MockAudioFileResolver, MockVoiceMemosResolver) {
         let transcriber = MockTranscriber(
             transcriptToReturn: transcript,
             errorToThrow: transcriberError
@@ -36,9 +43,10 @@ struct ToolsCallTests {
         )
         let handler = MCPToolsCallHandler(
             transcriber: transcriber,
-            audioResolver: resolver
+            audioResolver: resolver,
+            voiceMemosResolver: voiceMemosResolver
         )
-        return (handler, transcriber, resolver)
+        return (handler, transcriber, resolver, voiceMemosResolver)
     }
 
     /// Decode a tool-call envelope into its `(isError, [text...])`
@@ -74,7 +82,7 @@ struct ToolsCallTests {
         let transcript = TranscriptFixture.canned(
             text: "Hello, world, this is a test."
         )
-        let (handler, transcriber, resolver) = makeHandler(transcript: transcript)
+        let (handler, transcriber, resolver, _) = makeHandler(transcript: transcript)
 
         let result = try await handler.handle(params: .object([
             "name": .string("transcribe_file"),
@@ -106,7 +114,7 @@ struct ToolsCallTests {
 
     @Test func transcribeFileReturnsJSONContentWhenFormatIsJson() async throws {
         let transcript = TranscriptFixture.canned(text: "x")
-        let (handler, _, _) = makeHandler(transcript: transcript)
+        let (handler, _, _, _) = makeHandler(transcript: transcript)
 
         let result = try await handler.handle(params: .object([
             "name": .string("transcribe_file"),
@@ -129,7 +137,7 @@ struct ToolsCallTests {
     }
 
     @Test func transcribeFileForwardsLocaleArgument() async throws {
-        let (handler, transcriber, _) = makeHandler()
+        let (handler, transcriber, _, _) = makeHandler()
 
         _ = try await handler.handle(params: .object([
             "name": .string("transcribe_file"),
@@ -146,7 +154,7 @@ struct ToolsCallTests {
     // MARK: - transcribe_file -32602 paths
 
     @Test func transcribeFileMissingPathRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -156,7 +164,7 @@ struct ToolsCallTests {
     }
 
     @Test func transcribeFileWrongPathTypeRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -168,7 +176,7 @@ struct ToolsCallTests {
     }
 
     @Test func transcribeFileRelativePathRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -180,7 +188,7 @@ struct ToolsCallTests {
     }
 
     @Test func transcribeFileInvalidFormatEnumRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -195,7 +203,7 @@ struct ToolsCallTests {
     // MARK: - tools/call envelope -32602 paths
 
     @Test func toolsCallMissingNameRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "arguments": .object([:]),
@@ -204,14 +212,14 @@ struct ToolsCallTests {
     }
 
     @Test func toolsCallNonObjectParamsRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .string("not an object"))
         }
     }
 
     @Test func toolsCallNilParamsRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: nil)
         }
@@ -222,7 +230,7 @@ struct ToolsCallTests {
         // explicit type check the handler would silently treat it as
         // missing arguments and proceed into `list_voice_memos` (which
         // has no required params), masking a malformed invocation.
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("list_voice_memos"),
@@ -232,7 +240,7 @@ struct ToolsCallTests {
     }
 
     @Test func toolsCallArgumentsStringRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -242,7 +250,7 @@ struct ToolsCallTests {
     }
 
     @Test func toolsCallArgumentsNumberRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -254,7 +262,7 @@ struct ToolsCallTests {
     // MARK: - Unknown tool name -> isError, NOT -32601
 
     @Test func unknownToolNameReturnsErrorEnvelopeNotJsonRpcError() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         let result = try await handler.handle(params: .object([
             "name": .string("not_a_tool"),
             "arguments": .object([:]),
@@ -273,7 +281,7 @@ struct ToolsCallTests {
 
     @Test func resolverFileNotFoundProducesIsErrorEnvelope() async throws {
         let missingURL = URL(fileURLWithPath: "/does/not/exist.m4a")
-        let (handler, _, _) = makeHandler(
+        let (handler, _, _, _) = makeHandler(
             resolverError: DictamacError.fileNotFound(missingURL)
         )
 
@@ -299,7 +307,7 @@ struct ToolsCallTests {
         let underlying = DictamacError.speechAnalyzerUnavailable(
             reason: "locale model not installed"
         )
-        let (handler, _, _) = makeHandler(transcriberError: underlying)
+        let (handler, _, _, _) = makeHandler(transcriberError: underlying)
 
         let result = try await handler.handle(params: .object([
             "name": .string("transcribe_file"),
@@ -357,7 +365,7 @@ struct ToolsCallTests {
 
     @Test func eachRepresentativeErrorProducesAnIsErrorEnvelopeWithMatchingText() async throws {
         for error in Self.representativeErrors {
-            let (handler, _, _) = makeHandler(resolverError: error)
+            let (handler, _, _, _) = makeHandler(resolverError: error)
 
             let result = try await handler.handle(params: .object([
                 "name": .string("transcribe_file"),
@@ -375,30 +383,107 @@ struct ToolsCallTests {
         }
     }
 
-    // MARK: - Stub paths for the two voice-memo tools
+    // MARK: - transcribe_voice_memo wiring (#50)
 
-    @Test func transcribeVoiceMemoReturnsStubIsErrorEnvelopeForNow() async throws {
-        let (handler, _, _) = makeHandler()
+    @Test func transcribeVoiceMemoResolvesAndTranscribes() async throws {
+        let memo = VoiceMemoMetadataFixture.canned(
+            identifier: "42",
+            title: "Standup notes",
+            assetPath: URL(fileURLWithPath: "/Users/test/Library/voice-memos/42.m4a")
+        )
+        let vmResolver = MockVoiceMemosResolver(resolveResult: memo)
+        let transcript = TranscriptFixture.canned(text: "morning standup notes")
+        let (handler, transcriber, audioResolver, _) = makeHandler(
+            transcript: transcript,
+            resolvedURL: memo.assetPath,
+            voiceMemosResolver: vmResolver
+        )
+
         let result = try await handler.handle(params: .object([
             "name": .string("transcribe_voice_memo"),
             "arguments": .object([
-                "query": .string("yesterday"),
+                "query": .string("standup"),
             ]),
         ]))
 
         guard let envelope = unwrapEnvelope(result) else {
-            Issue.record("expected stub envelope; got \(result)")
+            Issue.record("malformed tool-call envelope: \(result)")
             return
         }
-        #expect(envelope.isError == true)
-        // Stub must point at the follow-up issue so a future reader
-        // (or agent) can find the wiring work.
-        #expect(envelope.texts.first?.contains("#50") == true
-                || envelope.texts.first?.contains("issues/50") == true)
+        #expect(envelope.isError == false)
+        #expect(envelope.texts == ["morning standup notes\n"])
+
+        // The Voice Memos resolver saw the parsed query.
+        #expect(vmResolver.receivedResolveQueries == [.fuzzyTitle("standup")])
+
+        // The audio resolver was handed the memo's asset path.
+        let sources = await audioResolver.receivedSources
+        #expect(sources == [.path(memo.assetPath.path)])
+
+        // The transcriber received the resolved file URL and default
+        // locale/format.
+        let requests = await transcriber.receivedRequests
+        #expect(requests.count == 1)
+        guard case .file(let url) = requests.first?.source else {
+            Issue.record("transcriber received non-.file source")
+            return
+        }
+        #expect(url.path == memo.assetPath.path)
+        #expect(requests.first?.format == .text)
+        #expect(requests.first?.locale.identifier == "en-US")
+    }
+
+    @Test func transcribeVoiceMemoReturnsJSONWhenFormatIsJson() async throws {
+        let memo = VoiceMemoMetadataFixture.canned()
+        let vmResolver = MockVoiceMemosResolver(resolveResult: memo)
+        let transcript = TranscriptFixture.canned(text: "ok")
+        let (handler, _, _, _) = makeHandler(
+            transcript: transcript,
+            resolvedURL: memo.assetPath,
+            voiceMemosResolver: vmResolver
+        )
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("transcribe_voice_memo"),
+            "arguments": .object([
+                "query": .string("yesterday"),
+                "format": .string("json"),
+            ]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result),
+              let text = envelope.texts.first else {
+            Issue.record("envelope missing or wrong shape: \(result)")
+            return
+        }
+        #expect(envelope.isError == false)
+        #expect(text.contains("\"version\""))
+        #expect(text.contains("\"fullText\""))
+        #expect(text.contains("\"segments\""))
+    }
+
+    @Test func transcribeVoiceMemoForwardsLocaleArgument() async throws {
+        let memo = VoiceMemoMetadataFixture.canned()
+        let vmResolver = MockVoiceMemosResolver(resolveResult: memo)
+        let (handler, transcriber, _, _) = makeHandler(
+            resolvedURL: memo.assetPath,
+            voiceMemosResolver: vmResolver
+        )
+
+        _ = try await handler.handle(params: .object([
+            "name": .string("transcribe_voice_memo"),
+            "arguments": .object([
+                "query": .string("today"),
+                "locale": .string("fr-FR"),
+            ]),
+        ]))
+
+        let requests = await transcriber.receivedRequests
+        #expect(requests.first?.locale.identifier == "fr-FR")
     }
 
     @Test func transcribeVoiceMemoMissingQueryRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_voice_memo"),
@@ -408,7 +493,7 @@ struct ToolsCallTests {
     }
 
     @Test func transcribeVoiceMemoEmptyQueryRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("transcribe_voice_memo"),
@@ -419,24 +504,233 @@ struct ToolsCallTests {
         }
     }
 
-    @Test func listVoiceMemosReturnsStubIsErrorEnvelopeWithDefaults() async throws {
-        let (handler, _, _) = makeHandler()
+    @Test func transcribeVoiceMemoWrongQueryTypeRaisesInvalidParams() async throws {
+        let (handler, _, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("transcribe_voice_memo"),
+                "arguments": .object([
+                    "query": .int(42),
+                ]),
+            ]))
+        }
+    }
+
+    @Test func transcribeVoiceMemoNotFoundProducesIsErrorEnvelope() async throws {
+        let vmResolver = MockVoiceMemosResolver(
+            resolveError: DictamacError.voiceMemoNotFound(query: "yesterday")
+        )
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("transcribe_voice_memo"),
+            "arguments": .object([
+                "query": .string("yesterday"),
+            ]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result) else {
+            Issue.record("expected envelope; got \(result)")
+            return
+        }
+        #expect(envelope.isError == true)
+        // Parity with the CLI's stderr line, minus trailing newline.
+        let expected = DictamacError
+            .voiceMemoNotFound(query: "yesterday").description
+        #expect(envelope.texts == [expected])
+    }
+
+    @Test func transcribeVoiceMemoLibraryMissingProducesIsErrorEnvelope() async throws {
+        let searched = [URL(fileURLWithPath: "/Users/test/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/")]
+        let error = DictamacError.voiceMemoLibraryMissing(searched: searched)
+        let vmResolver = MockVoiceMemosResolver(resolveError: error)
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("transcribe_voice_memo"),
+            "arguments": .object([
+                "query": .string("today"),
+            ]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result) else {
+            Issue.record("expected envelope; got \(result)")
+            return
+        }
+        #expect(envelope.isError == true)
+        #expect(envelope.texts == [error.description])
+    }
+
+    // MARK: - list_voice_memos wiring (#50)
+
+    @Test func listVoiceMemosReturnsJSONArrayOfListings() async throws {
+        let memo1 = VoiceMemoMetadataFixture.canned(
+            identifier: "1",
+            title: "First",
+            recordedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            durationSeconds: 10
+        )
+        let memo2 = VoiceMemoMetadataFixture.canned(
+            identifier: "2",
+            title: "Second",
+            recordedAt: Date(timeIntervalSince1970: 1_700_100_000),
+            durationSeconds: 20
+        )
+        let vmResolver = MockVoiceMemosResolver(listings: [memo2, memo1])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([:]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result),
+              let text = envelope.texts.first else {
+            Issue.record("envelope missing or wrong shape: \(result)")
+            return
+        }
+        #expect(envelope.isError == false)
+
+        // The text is a JSON array of VoiceMemoListing. Decode it back
+        // through the same Codable shape the CLI uses so we pin the
+        // schema, not the byte-level formatting.
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let listings = try decoder.decode(
+            [VoiceMemoListing].self,
+            from: Data(text.utf8)
+        )
+        #expect(listings.count == 2)
+        #expect(listings[0].identifier == "2")
+        #expect(listings[0].title == "Second")
+        #expect(listings[1].identifier == "1")
+        #expect(listings[1].title == "First")
+    }
+
+    @Test func listVoiceMemosAppliesDefaultsWhenArgsMissing() async throws {
+        let vmResolver = MockVoiceMemosResolver(listings: [])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let before = Date()
+        _ = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([:]),
+        ]))
+        let after = Date()
+
+        // Default since=30d → resolver should have seen ~now-30d.
+        #expect(vmResolver.receivedListSince.count == 1)
+        let sinceBound = vmResolver.receivedListSince[0]
+        let thirtyDays: TimeInterval = 30 * 86_400
+        let expectedLowerBound = before.addingTimeInterval(-thirtyDays)
+        let expectedUpperBound = after.addingTimeInterval(-thirtyDays)
+        #expect(sinceBound >= expectedLowerBound)
+        #expect(sinceBound <= expectedUpperBound)
+
+        // Default limit=30.
+        #expect(vmResolver.receivedListLimit == [30])
+    }
+
+    @Test func listVoiceMemosForwardsExplicitSinceAndLimit() async throws {
+        let vmResolver = MockVoiceMemosResolver(listings: [])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        _ = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([
+                "since": .string("7d"),
+                "limit": .int(5),
+            ]),
+        ]))
+
+        #expect(vmResolver.receivedListLimit == [5])
+        #expect(vmResolver.receivedListSince.count == 1)
+    }
+
+    @Test func listVoiceMemosClampsLimitAboveMaximum() async throws {
+        let vmResolver = MockVoiceMemosResolver(listings: [])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        _ = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([
+                "limit": .int(1000),
+            ]),
+        ]))
+
+        // Clamp upper-bound is 100 — matches CLI behaviour.
+        #expect(vmResolver.receivedListLimit == [100])
+    }
+
+    @Test func listVoiceMemosClampsLimitBelowMinimum() async throws {
+        let vmResolver = MockVoiceMemosResolver(listings: [])
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        _ = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([
+                "limit": .int(0),
+            ]),
+        ]))
+
+        // Clamp lower-bound is 1 — matches CLI behaviour.
+        #expect(vmResolver.receivedListLimit == [1])
+    }
+
+    @Test func listVoiceMemosInvalidSinceRaisesInvalidParams() async throws {
+        let (handler, _, _, _) = makeHandler()
+        await #expect(throws: MCPProtocolError.self) {
+            _ = try await handler.handle(params: .object([
+                "name": .string("list_voice_memos"),
+                "arguments": .object([
+                    "since": .string("not-a-duration"),
+                ]),
+            ]))
+        }
+    }
+
+    @Test func listVoiceMemosLibraryMissingProducesIsErrorEnvelope() async throws {
+        let searched = [URL(fileURLWithPath: "/Users/test/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/")]
+        let error = DictamacError.voiceMemoLibraryMissing(searched: searched)
+        let vmResolver = MockVoiceMemosResolver(listError: error)
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
         let result = try await handler.handle(params: .object([
             "name": .string("list_voice_memos"),
             "arguments": .object([:]),
         ]))
 
         guard let envelope = unwrapEnvelope(result) else {
-            Issue.record("expected stub envelope; got \(result)")
+            Issue.record("expected envelope; got \(result)")
             return
         }
         #expect(envelope.isError == true)
-        #expect(envelope.texts.first?.contains("issues/50") == true
-                || envelope.texts.first?.contains("#50") == true)
+        #expect(envelope.texts == [error.description])
+    }
+
+    @Test func listVoiceMemosPermissionDeniedProducesIsErrorEnvelope() async throws {
+        let error = DictamacError.permissionDenied(
+            domain: "Files & Folders",
+            deepLink: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+        )
+        let vmResolver = MockVoiceMemosResolver(listError: error)
+        let (handler, _, _, _) = makeHandler(voiceMemosResolver: vmResolver)
+
+        let result = try await handler.handle(params: .object([
+            "name": .string("list_voice_memos"),
+            "arguments": .object([:]),
+        ]))
+
+        guard let envelope = unwrapEnvelope(result) else {
+            Issue.record("expected envelope; got \(result)")
+            return
+        }
+        #expect(envelope.isError == true)
+        #expect(envelope.texts == [error.description])
     }
 
     @Test func listVoiceMemosWrongLimitTypeRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("list_voice_memos"),
@@ -448,7 +742,7 @@ struct ToolsCallTests {
     }
 
     @Test func listVoiceMemosWrongSinceTypeRaisesInvalidParams() async throws {
-        let (handler, _, _) = makeHandler()
+        let (handler, _, _, _) = makeHandler()
         await #expect(throws: MCPProtocolError.self) {
             _ = try await handler.handle(params: .object([
                 "name": .string("list_voice_memos"),
@@ -474,10 +768,12 @@ struct ToolsCallTests {
         let transcript = TranscriptFixture.canned(text: "ok")
         let transcriber = MockTranscriber(transcriptToReturn: transcript)
         let resolver = MockAudioFileResolver()
+        let vmResolver = MockVoiceMemosResolver()
         await ProductionMCPHandlers.register(
             on: server,
             transcriber: transcriber,
-            audioResolver: resolver
+            audioResolver: resolver,
+            voiceMemosResolver: vmResolver
         )
 
         let lines: [String] = [
