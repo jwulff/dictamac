@@ -14,7 +14,15 @@ import Darwin
 /// don't-throw invariant are filesystem-level behaviors, so the
 /// integration tests touch real files in a real temp directory rather
 /// than mocking the filesystem (see CLAUDE.md "Debugging Discipline §2").
-@Suite struct FilesystemRecordingsScannerTests {
+///
+/// The suite is `.serialized` because every test that needs an
+/// `.m4a` fixture goes through `AVAssetWriter`, and multiple writers
+/// running in parallel inside the same process contend for the
+/// shared AAC encoder — `finishWriting` deadlocks past its 10-second
+/// timeout once concurrent-writer count crosses a threshold. Serial
+/// execution within the suite keeps the synthesis path stable; the
+/// runtime cost is negligible (<100 ms per fixture).
+@Suite(.serialized) struct FilesystemRecordingsScannerTests {
 
     // MARK: - Fixture helpers
 
@@ -42,6 +50,27 @@ import Darwin
         @discardableResult
         func writeSilentM4A(stem: String, duration: Double = 0.05) throws -> URL {
             let url = directory.appendingPathComponent("\(stem).m4a")
+            try synthesizeSilentM4A(at: url, duration: duration)
+            return url
+        }
+
+        /// Writes a tiny silent AAC-in-M4A file at
+        /// `<directory>/<subpath>/<stem>.m4a`, creating intermediate
+        /// directories as needed. Returns the asset URL. Used to fake
+        /// the per-account / per-date nesting Voice Memos may adopt in
+        /// future macOS releases.
+        @discardableResult
+        func writeNestedSilentM4A(
+            subpath: String,
+            stem: String,
+            duration: Double = 0.05
+        ) throws -> URL {
+            let subdirectory = directory.appendingPathComponent(subpath)
+            try FileManager.default.createDirectory(
+                at: subdirectory,
+                withIntermediateDirectories: true
+            )
+            let url = subdirectory.appendingPathComponent("\(stem).m4a")
             try synthesizeSilentM4A(at: url, duration: duration)
             return url
         }
@@ -217,6 +246,56 @@ import Darwin
         #expect(results.first?.identifier == "real-memo")
         // .icloud placeholders are filtered by extension — no warning.
         #expect(warnings.snapshot().isEmpty)
+    }
+
+    // MARK: - Nested directories — recursive walk
+
+    /// Voice Memos may nest recordings under per-account or per-date
+    /// subdirectories (e.g. `Recordings/2026/05/foo.m4a`). The scanner
+    /// must walk the library recursively and surface every `.m4a` it
+    /// finds — not just the immediate children of `libraryURL`.
+    ///
+    /// Fixture shape:
+    /// ```
+    /// library/
+    ///   top-level.m4a
+    ///   2026/
+    ///     05/
+    ///       nested.m4a
+    /// ```
+    @Test
+    func nestedSubdirectoriesAreWalkedRecursively() throws {
+        let fixture = try Self.makeFixture()
+        defer { fixture.tearDown() }
+
+        let topLevel = try fixture.writeSilentM4A(stem: "top-level")
+        let nested = try fixture.writeNestedSilentM4A(
+            subpath: "2026/05",
+            stem: "nested"
+        )
+
+        let scanner = DefaultFilesystemRecordingsScanner()
+        let results = try scanner.scan(libraryURL: fixture.directory)
+
+        #expect(results.count == 2)
+        let ids = Set(results.map(\.identifier))
+        #expect(ids == ["top-level", "nested"])
+
+        // Verify the assetPath for each entry points at the right
+        // location on disk. Standardize paths because
+        // `FileManager.enumerator` may resolve `/var/...` to
+        // `/private/var/...` on macOS.
+        let byIdentifier = Dictionary(
+            uniqueKeysWithValues: results.map { ($0.identifier, $0) }
+        )
+        #expect(
+            byIdentifier["top-level"]?.assetPath.standardizedFileURL.path
+                == topLevel.standardizedFileURL.path
+        )
+        #expect(
+            byIdentifier["nested"]?.assetPath.standardizedFileURL.path
+                == nested.standardizedFileURL.path
+        )
     }
 
     // MARK: - Missing-library directory throws

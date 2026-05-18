@@ -28,8 +28,10 @@ public protocol FilesystemRecordingsScanner: Sendable {
     func scan(libraryURL: URL) throws -> [VoiceMemoMetadata]
 }
 
-/// Production implementation: enumerates `*.m4a` files non-recursively,
-/// probes extended attributes, and falls back to filesystem dates.
+/// Production implementation: enumerates `*.m4a` files recursively
+/// under the library directory, probes extended attributes, and falls
+/// back to filesystem dates. See the **Recursion** section below for
+/// the exact enumerator options used.
 ///
 /// ## Probe order for `recordedAt`
 ///
@@ -65,11 +67,20 @@ public protocol FilesystemRecordingsScanner: Sendable {
 ///
 /// ## Recursion
 ///
-/// Voice Memos as of macOS 26 writes all `.m4a` assets flat at the top
-/// of `Recordings/`. The scanner does **not** descend into
-/// subdirectories. If a future macOS release nests by date, this
-/// behavior changes and the doc-comment is the canonical record of
-/// what the scanner does today.
+/// The scanner walks `libraryURL` **recursively** via
+/// `FileManager.enumerator(at:includingPropertiesForKeys:options:errorHandler:)`,
+/// collecting every `*.m4a` asset under the library — including those
+/// nested under per-account or per-date subdirectories that Voice
+/// Memos may use on newer macOS releases. Hidden files / directories
+/// are ignored (`.skipsHiddenFiles`, e.g. `.Trash`) and the walk does
+/// not descend into bundle/package contents
+/// (`.skipsPackageDescendants` — defensive; voice memos are not
+/// packages today). Symbolic links are filtered out by inspecting
+/// `URLResourceKey.isSymbolicLinkKey` on each yielded URL —
+/// `DirectoryEnumerationOptions` has no native "skip symlinks" flag,
+/// but discarding them after the fact protects against an aliased
+/// asset double-counting under recursion. This matches the
+/// filesystem-fallback contract in `docs/PLAN.md` §7 U6.
 public final class DefaultFilesystemRecordingsScanner: FilesystemRecordingsScanner {
     /// Names of the extended attributes the scanner probes. Public for
     /// test verification — production callers should not need these.
@@ -90,22 +101,76 @@ public final class DefaultFilesystemRecordingsScanner: FilesystemRecordingsScann
 
     public func scan(libraryURL: URL) throws -> [VoiceMemoMetadata] {
         let fileManager = FileManager.default
-        let entries = try fileManager.contentsOfDirectory(
+
+        // Validate the library root up front so a missing or
+        // permission-denied directory raises a concrete error
+        // (`contentsOfDirectory` semantics) instead of silently yielding
+        // an empty walk. `FileManager.enumerator(at:...)` returns `nil`
+        // for both "no such directory" and "not a directory", which
+        // would be indistinguishable from "empty library".
+        _ = try fileManager.contentsOfDirectory(
+            at: libraryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+
+        // `enumerator(at:...)` recurses by default. Skipping hidden
+        // files drops `.Trash` and similar Apple-managed hidden trees;
+        // skipping package descendants is defensive (voice memos are
+        // flat `.m4a` files today, but a future bundle-shaped asset
+        // shouldn't be drilled into blindly). `DirectoryEnumerationOptions`
+        // does not expose a "skip symbolic links" flag, so symlinks are
+        // filtered out below by resource-key inspection — an aliased
+        // root would otherwise risk re-entering itself.
+        guard let enumerator = fileManager.enumerator(
             at: libraryURL,
             includingPropertiesForKeys: [
                 .creationDateKey,
                 .contentModificationDateKey,
                 .isRegularFileKey,
+                .isSymbolicLinkKey,
             ],
-            options: [.skipsHiddenFiles]
-        )
+            options: [
+                .skipsHiddenFiles,
+                .skipsPackageDescendants,
+            ],
+            errorHandler: { [diagnosticSink] url, error in
+                // Returning `true` keeps the walk going past per-entry
+                // failures (unreadable subdirectory, transient I/O
+                // error). The sink routes the warning to `--verbose`
+                // stderr; callers without a sink get a silent skip.
+                diagnosticSink?(
+                    "filesystem-scanner: enumeration error at \(url.path) — \(error.localizedDescription)"
+                )
+                return true
+            }
+        ) else {
+            // Already validated above; enumerator failure here is
+            // pathological. Return empty rather than crashing.
+            return []
+        }
 
-        // Sort by path for deterministic ordering. Directory enumeration
-        // order is filesystem-dependent (HFS+ vs APFS), and unit tests
-        // need a stable shape to assert against.
-        let m4aEntries = entries
-            .filter { $0.pathExtension.lowercased() == "m4a" }
-            .sorted { $0.path < $1.path }
+        var m4aEntries: [URL] = []
+        for case let url as URL in enumerator
+            where url.pathExtension.lowercased() == "m4a" {
+            // Defensive: filter symbolic links so an aliased asset
+            // can't double-count under recursive enumeration.
+            // `resourceValues(forKeys:)` is the documented way to
+            // inspect link status; a failure here is treated as
+            // "not a symlink" (the asset will be probed normally by
+            // `AVAudioFile` and skipped if it's actually broken).
+            let isSymlink = (try? url.resourceValues(
+                forKeys: [.isSymbolicLinkKey]
+            ).isSymbolicLink) ?? false
+            if isSymlink { continue }
+            m4aEntries.append(url)
+        }
+
+        // Sort by path for deterministic ordering. Enumeration order is
+        // filesystem-dependent (HFS+ vs APFS) and depth-first traversal
+        // can interleave subdirectories arbitrarily, so unit tests need
+        // a stable shape to assert against.
+        m4aEntries.sort { $0.path < $1.path }
 
         var results: [VoiceMemoMetadata] = []
         results.reserveCapacity(m4aEntries.count)
