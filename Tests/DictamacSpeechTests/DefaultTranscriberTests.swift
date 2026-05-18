@@ -5,8 +5,8 @@ import Testing
 
 /// Tests that don't require a live `SpeechAnalyzer`. The end-to-end
 /// transcription of the committed `.m4a` fixture lives in
-/// ``IntegrationTests`` so it can be gated separately if a CI runner
-/// lacks the on-device speech model.
+/// ``DefaultTranscriberIntegrationTests`` so it can be gated separately
+/// if a CI runner lacks the on-device speech model.
 struct DefaultTranscriberTests {
 
     @Test func transcriberCanBeUsedAsAnyTranscriberExistential() async throws {
@@ -25,8 +25,18 @@ struct DefaultTranscriberTests {
             format: .text
         )
 
-        await #expect(throws: DictamacError.self) {
-            try await transcriber.transcribe(request)
+        // The test name promises a specifically `.fileNotFound` error
+        // carrying the offending URL — pin both, not just "some error".
+        do {
+            _ = try await transcriber.transcribe(request)
+            Issue.record("expected transcribe to throw, but it returned")
+        } catch let error as DictamacError {
+            guard case .fileNotFound(let url) = error else {
+                Issue.record("expected .fileNotFound, got \(error)")
+                return
+            }
+            #expect(url == missingURL)
+            #expect(error.exitCode == 64)
         }
     }
 

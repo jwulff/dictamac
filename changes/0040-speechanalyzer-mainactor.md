@@ -1,6 +1,6 @@
 # Wrap SpeechAnalyzer with MainActor lifecycle
 
-PR: TBD
+PR: #40
 Issues: Closes #19 (Refs #2)
 
 ## What changed

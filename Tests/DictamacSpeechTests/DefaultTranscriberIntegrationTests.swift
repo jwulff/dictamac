@@ -48,12 +48,22 @@ struct DefaultTranscriberIntegrationTests {
         #expect(combined.contains("world"), "transcript missing 'world': \(transcript.fullText)")
 
         // Segment ranges should be monotonically non-decreasing and
-        // bounded by the clip duration.
+        // bounded by the clip duration. The per-segment invariants
+        // (start in-range, end >= start, end <= duration) are checked
+        // in the per-segment loop; the cross-segment ordering invariant
+        // (segment N's start >= segment N-1's end) is checked
+        // pairwise immediately after.
         for segment in transcript.segments {
             #expect(segment.startSeconds >= 0)
             #expect(segment.endSeconds >= segment.startSeconds)
             #expect(segment.endSeconds <= transcript.durationSeconds + 0.5,
                     "segment endSeconds=\(segment.endSeconds) exceeded durationSeconds=\(transcript.durationSeconds)")
+        }
+        for index in transcript.segments.indices.dropFirst() {
+            let previous = transcript.segments[index - 1]
+            let current = transcript.segments[index]
+            let diagnostic = "segment ranges not monotonically non-decreasing: segment[\(index - 1)].endSeconds=\(previous.endSeconds) > segment[\(index)].startSeconds=\(current.startSeconds)"
+            #expect(current.startSeconds >= previous.endSeconds, "\(diagnostic)")
         }
 
         // Source should round-trip the file path so the JSON formatter
