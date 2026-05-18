@@ -9,13 +9,10 @@ import Foundation
 /// touching the real `FileHandle.standardError` or process exit.
 struct StubHandlerTests {
 
-    // MARK: - voice-memo points at epic #4
-
-    @Test func voiceMemoStubMessageMentionsEpic4() {
-        let message = StubMessages.voiceMemoNotImplemented(query: "standup")
-        #expect(message.contains("standup"))
-        #expect(message.contains("#4"))
-    }
+    // The `--voice-memo` stub was removed in #56 when the real CLI
+    // handler landed alongside the MCP `transcribe_voice_memo` wiring
+    // from #54. End-to-end coverage now lives in
+    // `VoiceMemoHandlerTests.swift`.
 
     // MARK: - MCP stub points at epic #5
 

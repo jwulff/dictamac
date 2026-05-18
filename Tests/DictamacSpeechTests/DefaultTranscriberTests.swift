@@ -80,4 +80,50 @@ struct DefaultTranscriberTests {
             Issue.record("expected .stdin, got .file — the PR #43 regression has returned")
         }
     }
+
+    // MARK: - Voice-memo source mapping (PR #57 review)
+
+    @Test func voiceMemoRequestSourceMapsToVoiceMemoTranscriptSourceWithMetadata() {
+        // Regression test for the PR #57 bug: previously the CLI and
+        // MCP voice-memo handlers built a `.file(resolvedURL)` request
+        // source, which collapsed to `TranscriptSource.file(path:
+        // assetURL.path)` and leaked the opaque asset path into JSON
+        // output. The fix: a dedicated request-source variant that
+        // the transcriber maps to the right transcript-source variant
+        // carrying the memo's identifier + title.
+        let assetURL = URL(fileURLWithPath: "/Users/test/Library/voice-memos/42.m4a")
+        let result = DefaultTranscriber.transcriptSource(
+            for: .voiceMemo(identifier: "VM-42", title: "Yesterday's standup", url: assetURL),
+            audioURL: assetURL
+        )
+        #expect(result == .voiceMemo(identifier: "VM-42", title: "Yesterday's standup"))
+        // Belt-and-suspenders: assert it is NOT a `.file` source, so a
+        // future refactor that reverted to `.file` would fail with a
+        // clear diff rather than silently regressing.
+        if case .file = result {
+            Issue.record("expected .voiceMemo, got .file — the PR #57 regression has returned")
+        }
+    }
+
+    @Test func voiceMemoRequestSourceDropsAssetURLFromTranscriptSource() {
+        // Independent of the asset URL: the emitted transcript source
+        // must NOT carry it. The identifier + title are the only
+        // user-meaningful fields, and the asset path inside the Voice
+        // Memos library is meaningless to a human consumer.
+        let assetURL = URL(fileURLWithPath: "/Users/test/Library/voice-memos/opaque-uuid.m4a")
+        let result = DefaultTranscriber.transcriptSource(
+            for: .voiceMemo(identifier: "VM-X", title: "Title", url: assetURL),
+            audioURL: assetURL
+        )
+        // Round-trip through Codable and assert no `path` key — the
+        // schema test in TranscriptTests already covers this, but
+        // pinning it at the mapping seam too means a regression here
+        // gets caught before it reaches the formatter.
+        let data = try? JSONEncoder().encode(result)
+        let object = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+        #expect(object?["type"] as? String == "voice-memo")
+        #expect(object?["identifier"] as? String == "VM-X")
+        #expect(object?["title"] as? String == "Title")
+        #expect(object?["path"] == nil)
+    }
 }
