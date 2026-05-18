@@ -1,6 +1,6 @@
 # Document stdin source in PLAN; read version from Info.plist
 
-PR: TBD
+PR: #59
 Issues: Closes #44 Closes #32
 
 ## What changed
