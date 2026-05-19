@@ -17,7 +17,7 @@ class Dictamac < Formula
   # Replace with the value of:
   #   curl -sL https://github.com/jwulff/dictamac/archive/refs/tags/v0.1.0.tar.gz \
   #     | shasum -a 256
-  sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
+  sha256 "ffb72eedd13db1eb27e16837b44b363360638f61f4240def3fb9d04bab633658"
   license "MIT"
   head "https://github.com/jwulff/dictamac.git", branch: "main"
 
@@ -56,10 +56,33 @@ class Dictamac < Formula
     # overrides it.
     ENV["MACOSX_DEPLOYMENT_TARGET"] = "26.0"
 
-    # The Makefile already honors PREFIX. `prefix` is the standard
-    # Homebrew variable for the keg root; bin/etc/share land under it.
-    system "make", "build"
-    system "make", "install", "PREFIX=#{prefix}"
+    # Build directly via `swift build` instead of `make build` so we
+    # can pass `--disable-sandbox`. Homebrew already wraps the install
+    # in its own `sandbox-exec`, and SwiftPM's internal sandbox-exec
+    # call during manifest compilation fails with
+    # `sandbox-exec: sandbox_apply: Operation not permitted` when
+    # nested inside Homebrew's sandbox. `--disable-sandbox` tells
+    # SwiftPM to skip its layer, which is safe under Homebrew's
+    # already-sandboxed install context.
+    system "swift", "build",
+           "-c", "release",
+           "--disable-sandbox",
+           "-Xlinker", "-sectcreate",
+           "-Xlinker", "__TEXT",
+           "-Xlinker", "__info_plist",
+           "-Xlinker", "Resources/Info.plist"
+
+    # SpeechAnalyzer requires the `disable-library-validation` +
+    # `allow-jit` + `device.audio-input` entitlements at runtime, so
+    # ad-hoc sign the binary the same way `make sign` does.
+    system "codesign",
+           "--sign", "-",
+           "--options", "runtime",
+           "--entitlements", "Resources/dictamac.entitlements",
+           "--force",
+           ".build/release/dictamac"
+
+    bin.install ".build/release/dictamac"
   end
 
   test do
