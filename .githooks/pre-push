@@ -93,26 +93,52 @@ while read local_ref local_sha remote_ref remote_sha; do
     # Determine the range of commits being pushed
     if [ "$remote_sha" = "$ZERO_SHA" ]; then
         # New branch / initial push - check every commit on the branch
-        # that is not already reachable from main/master. This catches the
-        # orphan case (no merge base) by listing all commits reachable from
-        # $local_sha minus anything reachable from main/master. If neither
-        # base branch exists locally, fall back to every commit on the
-        # branch so attestation is still enforced across the full history.
-        COMMIT_LIST=$(
-            git rev-list "$local_sha" \
-                --not --branches='main' --not --branches='master' \
-                --not --remotes='origin/main' --not --remotes='origin/master' \
-                2>/dev/null
-        )
-        if [ -z "$COMMIT_LIST" ]; then
-            # Truly orphan: no main/master to exclude from, or every commit
-            # is already reachable from one of them (no-op push). The latter
-            # produces an empty COMMIT_LIST which we want anyway; for the
-            # former, fall back to every commit reachable from $local_sha.
-            if ! git show-ref --verify --quiet refs/heads/main \
-                && ! git show-ref --verify --quiet refs/heads/master; then
-                COMMIT_LIST=$(git rev-list "$local_sha")
+        # that is not already reachable from main/master. Find the merge
+        # base with main (or master, or origin/main, or origin/master)
+        # and exclude everything up to it. If no base branch exists, fall
+        # back to every commit reachable from $local_sha (truly orphan).
+        #
+        # NOTE: don't use `git rev-list --not --branches=main` — the glob
+        # `main` (without `*`) doesn't match the literal `refs/heads/main`
+        # ref in this git version, so the exclusion silently no-ops and
+        # the entire main history gets reported as "missing attestation".
+        # Using merge-base + range syntax sidesteps the glob trap.
+        # Collect every available base ref, then ask git to choose the
+        # best (newest) merge base across all of them. Stopping at the
+        # first match would prefer a stale local `main` over a fresher
+        # `origin/main`, which would include already-upstream commits in
+        # the attestation check.
+        BASE_SHAS=""
+        for base in origin/main origin/master main master; do
+            if BASE_SHA=$(git rev-parse --verify "$base" 2>/dev/null); then
+                BASE_SHAS="$BASE_SHAS $BASE_SHA"
             fi
+        done
+        MERGE_BASE=""
+        if [ -n "$BASE_SHAS" ]; then
+            # `git merge-base --octopus` returns the merge base reachable
+            # from all listed commits; falling back to per-base merge-base
+            # picks the newest reachable from the union if octopus fails.
+            MERGE_BASE=$(git merge-base --octopus "$local_sha" $BASE_SHAS 2>/dev/null || true)
+            if [ -z "$MERGE_BASE" ]; then
+                for BASE_SHA in $BASE_SHAS; do
+                    if MB=$(git merge-base "$local_sha" "$BASE_SHA" 2>/dev/null); then
+                        # Keep the merge-base with the newest commit date,
+                        # so a fresher origin/main wins over a stale local main.
+                        if [ -z "$MERGE_BASE" ] || \
+                            [ "$(git log -1 --format=%ct "$MB")" -gt \
+                              "$(git log -1 --format=%ct "$MERGE_BASE")" ]; then
+                            MERGE_BASE="$MB"
+                        fi
+                    fi
+                done
+            fi
+        fi
+        if [ -n "$MERGE_BASE" ]; then
+            COMMIT_LIST=$(git rev-list "$MERGE_BASE..$local_sha")
+        else
+            # Truly orphan: no main/master to merge-base against.
+            COMMIT_LIST=$(git rev-list "$local_sha")
         fi
     else
         # Existing branch - check commits since last push
