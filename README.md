@@ -53,7 +53,19 @@ Apple's Voice Memos app transcribes recordings only when it feels like it — th
 
 ## Install
 
-### From source (recommended for now)
+### Homebrew (recommended)
+
+```bash
+brew install jwulff/tap/dictamac
+```
+
+That's it — Homebrew taps [`jwulff/homebrew-tap`](https://github.com/jwulff/homebrew-tap),
+fetches the [v0.1.0 source tarball](https://github.com/jwulff/dictamac/releases/tag/v0.1.0),
+builds with Swift, ad-hoc signs the binary with the `SpeechAnalyzer`
+entitlements, and drops it at `/opt/homebrew/bin/dictamac`. Build
+takes about 15 seconds on Apple Silicon.
+
+### From source
 
 ```bash
 git clone https://github.com/jwulff/dictamac.git
@@ -68,24 +80,11 @@ make install PREFIX=/usr/local   # or override the prefix
 codesign step and the resulting binary will `SIGTRAP` on first
 SpeechAnalyzer touch.
 
-### Homebrew (coming soon)
-
-Once the `jwulff/homebrew-tap` repo is published with the v0.1.0 formula,
-the recommended install will be:
-
-```bash
-brew install jwulff/tap/dictamac
-```
-
-This is **not yet available** — the tap repo and v0.1.0 release tag are
-post-merge user actions tracked in
-[#9](https://github.com/jwulff/dictamac/issues/9). Until then, use the
-from-source path above.
-
-A sample Homebrew formula lives at
-[`Formula/dictamac.rb`](Formula/dictamac.rb) so the formula can be
-reviewed alongside the code it builds; the canonical, brew-installable
-copy will live in the tap repo once it's published.
+The canonical [`Formula/dictamac.rb`](Formula/dictamac.rb) lives in
+this repo so the recipe can be code-reviewed alongside the code it
+builds; the actively-installed copy is mirrored to
+[`jwulff/homebrew-tap`](https://github.com/jwulff/homebrew-tap) on
+each release.
 
 ## Requirements
 
@@ -93,9 +92,10 @@ copy will live in the tap repo once it's published.
   `SpeechTranscriber` APIs introduced in macOS 26. Older macOS releases
   cannot run dictamac.
 - **Swift 6.x toolchain** — Xcode 16 or later, or a standalone Swift
-  toolchain installer. Required only when building from source (the
-  Homebrew formula also builds from source for now, so it also needs
-  this).
+  toolchain installer. Required whether you install via Homebrew (the
+  formula builds from source) or directly via `make build`. The
+  formula explicitly checks for Xcode 26+ because that's the toolchain
+  ships the macOS 26 SDK that `SpeechAnalyzer` lives in.
 - **Apple Silicon recommended**; Intel works but slower.
 - **Speech Recognition permission** — granted on first run via the
   deep-link printed to stderr.
