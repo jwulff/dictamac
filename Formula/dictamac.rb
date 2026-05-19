@@ -17,9 +17,7 @@ class Dictamac < Formula
   # Replace with the value of:
   #   curl -sL https://github.com/jwulff/dictamac/archive/refs/tags/v0.1.0.tar.gz \
   #     | shasum -a 256
-  # immediately after pushing the v0.1.0 tag. See the release procedure in
-  # `changes/` for the full sequence.
-  sha256 "PLACEHOLDER_REPLACE_WITH_REAL_SHA256_AFTER_TAGGING_v0.1.0"
+  sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
   license "MIT"
   head "https://github.com/jwulff/dictamac.git", branch: "main"
 
